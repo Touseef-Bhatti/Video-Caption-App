@@ -1,0 +1,12 @@
+services:
+  postgres:
+    ports: !override
+      - "15432:5432"
+
+  redis:
+    ports: !override
+      - "16379:6379"
+
+  backend:
+    ports: !override
+      - "9001:8000"

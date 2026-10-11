@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Gemini Connection Test</title>
+  <style>
+    body { font: 16px system-ui, sans-serif; max-width: 720px; margin: 48px auto; padding: 0 20px; color: #202124; }
+    button { padding: 10px 16px; cursor: pointer; }
+    pre { background: #f4f6f8; padding: 16px; border-radius: 8px; white-space: pre-wrap; }
+    .ok { color: #137333; } .bad { color: #c5221f; }
+  </style>
+</head>
+<body>
+  <h1>Gemini connection test</h1>
+  <p>This development-only test uses the backend key. The key is never sent to or displayed in the browser.</p>
+  <button id="run">Run test</button>
+  <h2 id="status">Not tested</h2>
+  <pre id="result">Click “Run test”.</pre>
+  <script>
+    const api = 'http://localhost:9001/api/diagnostics/gemini';
+    const run = document.getElementById('run');
+    const status = document.getElementById('status');
+    const result = document.getElementById('result');
+    run.addEventListener('click', async () => {
+      run.disabled = true;
+      status.textContent = 'Testing…';
+      status.className = '';
+      try {
+        const response = await fetch(api);
+        const data = await response.json();
+        status.textContent = data.ok ? 'Gemini is working' : 'Gemini request failed';
+        status.className = data.ok ? 'ok' : 'bad';
+        result.textContent = JSON.stringify(data, null, 2);
+      } catch (error) {
+        status.textContent = 'Diagnostic request failed';
+        status.className = 'bad';
+        result.textContent = String(error);
+      } finally {
+        run.disabled = false;
+      }
+    });
+  </script>
+</body>
+</html>
