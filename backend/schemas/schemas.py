@@ -34,6 +34,8 @@ class GeminiWord(BaseModel):
     end: float
     style: WordStyle = "normal"
     emoji: str | None = Field(default=None, max_length=12)
+    # Context importance used to decide which words share an on-screen line.
+    weight: int = Field(default=50, ge=20, le=100)
 
     @field_validator("end")
     @classmethod
@@ -56,6 +58,15 @@ class GeminiSegment(BaseModel):
     # (see gemini_service.SYSTEM_PROMPT) and, for the "dynamic" preset, how
     # much its emphasized words visually scale up.
     weight: float = Field(default=0.5, ge=0.0, le=1.0)
+    # Optional per-caption-line placement saved by editor gestures.
+    position_x: float | None = Field(default=None, ge=0.05, le=0.95)
+    position_y: float | None = Field(default=None, ge=0.05, le=0.95)
+    scale: float | None = Field(default=None, ge=0.5, le=2.0)
+    rotation_degrees: float | None = Field(default=None, ge=-30, le=30)
+    style_preset: str | None = Field(default=None, min_length=1, max_length=64)
+    font_family: Literal["auto", "Caption Sans", "Caption Arabic", "Caption Urdu"] | None = None
+    font_size: int | None = Field(default=None, ge=16, le=120)
+    motion_enabled: bool | None = None
 
 
 class GeminiTranscriptResponse(BaseModel):

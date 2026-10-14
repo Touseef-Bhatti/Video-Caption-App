@@ -93,10 +93,6 @@ def process_video_job(self, job_id: str) -> None:
             audio_path, probe.duration_seconds, work_dir / "chunks",
             caption_language=caption_options.get("caption_language", "auto"),
         ))
-        translate_to = caption_options.get("translate_to")
-        if translate_to and translate_to.strip().casefold() != transcript.language.strip().casefold():
-            transcript = asyncio.run(gemini_service.translate_transcript(transcript, translate_to))
-
         # ---- persist caption data (editable by the user afterward) ----
         _update_job(session, job, status=JobStatus.creating_captions, stage="Creating captions", progress=55)
         _check_cancelled(session, job_id)

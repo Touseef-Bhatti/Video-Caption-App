@@ -12,6 +12,50 @@ String captionPosition(String id) =>
         ? 'center'
         : 'bottom';
 
+String captionFontForLanguage(String language) {
+  final normalized = language.toLowerCase().trim();
+  if (normalized == 'urdu') return 'Caption Urdu';
+  if ({'arabic', 'persian', 'farsi'}.contains(normalized)) {
+    return 'Caption Arabic';
+  }
+  return 'Caption Sans';
+}
+
+String captionFontForTranscript(CaptionTranscript transcript) {
+  final text = transcript.segments.map((segment) => segment.text).join(' ');
+  return captionFontForText(text, transcript.language);
+}
+
+String captionFontForText(String text, String language) {
+  final hasArabicScript = RegExp(r'[\u0600-\u06FF\u0750-\u077F]')
+      .hasMatch(text);
+  if (!hasArabicScript) return 'Caption Sans';
+  return captionFontForLanguage(language);
+}
+
+bool captionTranscriptIsRtl(CaptionTranscript transcript) {
+  final text = transcript.segments.map((segment) => segment.text).join(' ');
+  return captionTextIsRtl(text, transcript.language);
+}
+
+bool captionTextIsRtl(String text, String language) {
+  if (text.isNotEmpty) {
+    final hasRtlScript = RegExp(r'[\u0590-\u08FF]').hasMatch(text);
+    final hasLatinScript = RegExp(r'[A-Za-z]').hasMatch(text);
+    if (hasRtlScript && !hasLatinScript) return true;
+    if (hasLatinScript) return false;
+    return hasRtlScript;
+  }
+  return {'urdu', 'arabic', 'persian', 'farsi', 'hebrew'}
+      .contains(language.toLowerCase().trim());
+}
+
+String captionFontLabel(String family) => switch (family) {
+      'Caption Urdu' => 'Noto Nastaliq Urdu',
+      'Caption Arabic' => 'Noto Naskh Arabic',
+      _ => 'Noto Sans',
+    };
+
 double captionPositionY(String position) => switch (position) {
       'top' => 0.17,
       'center' => 0.52,
@@ -50,35 +94,41 @@ class CaptionScene extends StatelessWidget {
     }
     if (segment == null) return const SizedBox.expand();
     final seg = segment;
-    final preset = presetInfoFor(presetId);
-    final x = (overrides.positionX ?? 0.5).clamp(0.05, 0.95);
-    final y = (overrides.positionY ??
-            captionPositionY(overrides.position ?? captionPosition(presetId)))
+    final activePresetId = seg.stylePreset ?? presetId;
+    final preset = presetInfoFor(activePresetId);
+    final x = (seg.positionX ?? overrides.positionX ?? 0.5).clamp(0.05, 0.95);
+    final y = (seg.positionY ?? overrides.positionY ??
+            captionPositionY(overrides.position ?? captionPosition(activePresetId)))
         .clamp(0.05, 0.95);
-    final active = seg.words.indexWhere((w) => t >= w.start && t < w.end);
+    final lineScale = seg.scale ?? overrides.scale;
+    final lineRotation = seg.rotationDegrees ?? overrides.rotationDegrees;
     final words = seg.words.isEmpty
-        ? [CaptionWord(text: seg.text, start: seg.start, end: seg.end, style: WordStyle.normal)]
+        ? _wordsFromSegment(seg)
         : seg.words;
-    final language = transcript.language.toLowerCase().trim();
-    final rtl = {'urdu', 'arabic', 'persian', 'farsi', 'hebrew'}.contains(language);
-    final languageFont = language == 'urdu'
-        ? 'Caption Urdu'
-        : {'arabic', 'persian', 'farsi'}.contains(language)
-            ? 'Caption Arabic'
-            : 'Caption Sans';
-    final font = overrides.fontFamily ?? languageFont;
-    final size = (overrides.fontSize ?? 44).toDouble();
-    final motionEnabled = overrides.motionEnabled;
+    final active = words.indexWhere((w) => t >= w.start && t < w.end);
+    final wordRows = captionWordGroups(words);
+    var visibleRowIndex = wordRows.lastIndexWhere(
+      (indices) => t >= words[indices.first].start,
+    );
+    if (visibleRowIndex < 0) visibleRowIndex = 0;
+    final visibleWords = wordRows.isEmpty ? <int>[] : wordRows[visibleRowIndex];
+    final rtl = captionTextIsRtl(seg.text, transcript.language);
+    final languageFont = captionFontForText(seg.text, transcript.language);
+    final font = seg.fontFamily == 'auto'
+        ? languageFont
+        : seg.fontFamily ?? overrides.fontFamily ?? languageFont;
+    final size = (seg.fontSize ?? overrides.fontSize ?? 44).toDouble();
+    final motionEnabled = seg.motionEnabled ?? overrides.motionEnabled;
     // Existing panel spacing, normalized with the old 18px / 44 size ratio.
     const unit = 44 / 18;
 
     Color colorFor(WordStyle style, int wordIndex) {
-      if (presetInfoFor(presetId).id == 'karaoke') {
+      if (presetInfoFor(activePresetId).id == 'karaoke') {
         if (wordIndex == active) return overrides.highlightColor != null
-            ? colorFromHex(overrides.highlightColor!) : presetInfoFor(presetId).highlightPreview;
-        if (wordIndex < active) return presetInfoFor(presetId).highlightPreview;
+            ? colorFromHex(overrides.highlightColor!) : preset.highlightPreview;
+        if (wordIndex < active) return preset.highlightPreview;
         return overrides.primaryColor != null
-            ? colorFromHex(overrides.primaryColor!) : presetInfoFor(presetId).primaryPreview;
+            ? colorFromHex(overrides.primaryColor!) : preset.primaryPreview;
       }
       final hex = switch (style) {
         WordStyle.normal => overrides.primaryColor,
@@ -101,7 +151,7 @@ class CaptionScene extends StatelessWidget {
         WordStyle.highlight => 0.27,
         WordStyle.normal => 0.08,
       };
-      return 1 + math.sin(phase(w) * math.pi) * seg.weight * strength *
+      return 1 + math.sin(phase(w) * math.pi) * (w.weight / 100) * strength *
           (preset.motion == 'impact' ? 1.22 : 1);
     }
     Offset offset(CaptionWord w, int i) {
@@ -137,38 +187,39 @@ class CaptionScene extends StatelessWidget {
                 ? [BoxShadow(color: preset.highlightPreview.withValues(alpha: 0.38), blurRadius: 12 * unit)]
                 : null,
           ),
-          child: Wrap(
-            alignment: WrapAlignment.center,
-            crossAxisAlignment: WrapCrossAlignment.center,
-            spacing: 4 * unit,
-            runSpacing: 3 * unit,
-            children: [
-              for (final entry in words.indexed) ...[
-                if (entry.$1 == active && motionEnabled && preset.motion != 'none' && preset.effect.isNotEmpty &&
-                    seg.weight >= 0.72 && entry.$2.style != WordStyle.normal)
+          child: FittedBox(
+            fit: BoxFit.scaleDown,
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+              for (final i in visibleWords) ...[
+                if (i != visibleWords.first) SizedBox(width: 4 * unit),
+                if (i == active && motionEnabled && preset.motion != 'none' && preset.effect.isNotEmpty &&
+                    words[i].weight >= 70 && words[i].style != WordStyle.normal)
                   Transform.scale(
-                    scale: scale(entry.$2, entry.$1),
+                    scale: scale(words[i], i),
                     child: Text(preset.effect,
                         style: TextStyle(color: preset.emphasisPreview, fontSize: size)),
                   ),
                 Transform.translate(
-                  offset: offset(entry.$2, entry.$1),
+                  offset: offset(words[i], i),
                   child: Transform.scale(
-                    scale: scale(entry.$2, entry.$1),
+                    scale: scale(words[i], i),
                     child: Row(mainAxisSize: MainAxisSize.min, children: [
-                      Text(entry.$2.text,
-                          style: TextStyle(color: colorFor(entry.$2.style, entry.$1), fontSize: size,
+                      Text(words[i].text,
+                          style: TextStyle(color: colorFor(words[i].style, i), fontSize: size,
                               letterSpacing: overrides.letterSpacing ?? 0,
                               fontStyle: (overrides.italic ?? false) ? FontStyle.italic : FontStyle.normal,
                               fontWeight: (overrides.bold ?? preset.bold)
                                   ? FontWeight.w800 : FontWeight.w500)),
-                      if (overrides.emojisEnabled && entry.$2.emoji != null)
-                        Text(' ${entry.$2.emoji}', style: TextStyle(fontSize: size)),
+                      if (overrides.emojisEnabled && words[i].emoji != null)
+                        Text(' ${words[i].emoji}', style: TextStyle(fontSize: size)),
                     ]),
                   ),
                 ),
               ],
-            ],
+              ],
+            ),
           ),
         ),
       );
@@ -219,11 +270,15 @@ class CaptionScene extends StatelessWidget {
                           enabled: onTransformChanged != null,
                           centerX: x,
                           centerY: y,
-                          scale: overrides.scale,
-                          rotationDegrees: overrides.rotationDegrees,
+                          scale: lineScale,
+                          rotationDegrees: lineRotation,
                           canvasWidth: frame.maxWidth,
                           canvasHeight: frame.maxHeight,
                           onChanged: onTransformChanged,
+                          child: CustomPaint(
+                          foregroundPainter: onTransformChanged == null
+                              ? null
+                              : const _DottedSelectionPainter(),
                           child: Transform.translate(
                           offset: motionEnabled && preset.motion == 'slide'
                               ? Offset((1 - ((t - seg.start) / 0.28).clamp(0.0, 1.0)) * 24 * unit, 0)
@@ -232,7 +287,7 @@ class CaptionScene extends StatelessWidget {
                             opacity: motionEnabled && preset.motion != 'none' ? ((t - seg.start) /
                                 (preset.motion == 'cinematic' ? 0.42 : 0.18)).clamp(0.15, 1.0) : 1,
                             child: panel,
-                          ),
+                          )),
                           ),
                       ),
                     ),
@@ -245,6 +300,56 @@ class CaptionScene extends StatelessWidget {
       );
     });
   }
+}
+
+List<CaptionWord> _wordsFromSegment(CaptionSegment segment) {
+  final tokens = segment.text.trim().split(RegExp(r'\s+'))
+    ..removeWhere((token) => token.isEmpty);
+  if (tokens.isEmpty) return const [];
+  final totalChars = tokens.fold<int>(0, (sum, token) => sum + token.length);
+  final duration = segment.end - segment.start;
+  var elapsedChars = 0;
+  final words = <CaptionWord>[];
+  for (final token in tokens) {
+    final start = segment.start + duration * elapsedChars / totalChars;
+    elapsedChars += token.length;
+    final end = segment.start + duration * elapsedChars / totalChars;
+    words.add(CaptionWord(
+      text: token,
+      start: start,
+      end: end,
+      style: WordStyle.normal,
+      weight: 50,
+    ));
+  }
+  return words;
+}
+
+class _DottedSelectionPainter extends CustomPainter {
+  const _DottedSelectionPainter();
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final paint = Paint()
+      ..color = Colors.white
+      ..strokeWidth = 1.5
+      ..style = PaintingStyle.stroke;
+    const dash = 5.0;
+    const gap = 4.0;
+    for (var x = 0.0; x < size.width; x += dash + gap) {
+      final endX = math.min(x + dash, size.width).toDouble();
+      canvas.drawLine(Offset(x, 0), Offset(endX, 0), paint);
+      canvas.drawLine(Offset(x, size.height), Offset(endX, size.height), paint);
+    }
+    for (var y = 0.0; y < size.height; y += dash + gap) {
+      final endY = math.min(y + dash, size.height).toDouble();
+      canvas.drawLine(Offset(0, y), Offset(0, endY), paint);
+      canvas.drawLine(Offset(size.width, y), Offset(size.width, endY), paint);
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _DottedSelectionPainter oldDelegate) => false;
 }
 
 class _CaptionGestureTransform extends StatefulWidget {

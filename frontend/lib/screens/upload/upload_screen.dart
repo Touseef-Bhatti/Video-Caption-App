@@ -43,9 +43,7 @@ class _UploadScreenState extends ConsumerState<UploadScreen> {
   PlatformFile? _picked;
   String? _localError;
   String _captionLanguage = 'auto';
-  String _translateTo = 'English';
   String _customCaptionLanguage = '';
-  String _customTranslateTo = '';
 
   bool get _busy =>
       _progress.status == ChunkedUploadStatus.initializing ||
@@ -109,10 +107,7 @@ class _UploadScreenState extends ConsumerState<UploadScreen> {
     final captionLanguage = _captionLanguage == 'other'
         ? _customCaptionLanguage.trim()
         : _captionLanguage;
-    final translateTo =
-        _translateTo == 'other' ? _customTranslateTo.trim() : _translateTo;
-    if ((_captionLanguage == 'other' && captionLanguage.isEmpty) ||
-        (_translateTo == 'other' && translateTo.isEmpty)) {
+    if (_captionLanguage == 'other' && captionLanguage.isEmpty) {
       setState(() => _localError = 'Enter the language name to continue.');
       return;
     }
@@ -124,7 +119,6 @@ class _UploadScreenState extends ConsumerState<UploadScreen> {
         contentType: contentType,
         totalSize: file.size,
         captionLanguage: captionLanguage,
-        translateTo: translateTo == 'same' ? null : translateTo,
         filePath: kIsWeb ? null : file.path,
         bytes: file.bytes,
       );
@@ -255,37 +249,11 @@ class _UploadScreenState extends ConsumerState<UploadScreen> {
                     onChanged: (value) => _customCaptionLanguage = value,
                   ),
                 ],
-                const SizedBox(height: AppSpacing.md),
-                DropdownButtonFormField<String>(
-                  value: _translateTo,
-                  decoration: const InputDecoration(
-                    labelText: 'Caption text language',
-                    helperText:
-                        'Gemini writes captions in this language. English is the default; choose the spoken language to keep the original wording.',
-                    border: OutlineInputBorder(),
-                  ),
-                  items: [
-                    const DropdownMenuItem(
-                        value: 'same', child: Text('Same as spoken language')),
-                    for (final language in captionLanguages)
-                      DropdownMenuItem(value: language, child: Text(language)),
-                    const DropdownMenuItem(
-                        value: 'other', child: Text('Other language…')),
-                  ],
-                  onChanged: _busy
-                      ? null
-                      : (value) =>
-                          setState(() => _translateTo = value ?? 'English'),
+                const SizedBox(height: AppSpacing.sm),
+                Text(
+                  'Captions keep the spoken language and wording. You can translate them later in the editor.',
+                  style: Theme.of(context).textTheme.bodySmall,
                 ),
-                if (_translateTo == 'other') ...[
-                  const SizedBox(height: AppSpacing.sm),
-                  TextField(
-                    enabled: !_busy,
-                    decoration: const InputDecoration(
-                        labelText: 'Caption text language'),
-                    onChanged: (value) => _customTranslateTo = value,
-                  ),
-                ],
                 const SizedBox(height: AppSpacing.lg),
                 if (_busy ||
                     (_progress.status == ChunkedUploadStatus.failed &&

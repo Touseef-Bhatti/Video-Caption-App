@@ -21,13 +21,15 @@ class CaptionWord {
       required this.start,
       required this.end,
       required this.style,
-      this.emoji});
+      this.emoji,
+      this.weight = 50});
 
   final String text;
   final double start;
   final double end;
   final WordStyle style;
   final String? emoji;
+  final int weight; // 20-100 context importance assigned by Gemini
 
   /// Manual per-word style editing (spec: "user can also manually edit
   /// those captions"): tapping a word in the editor cycles its emphasis
@@ -47,6 +49,7 @@ class CaptionWord {
           double? end,
           WordStyle? style,
           String? emoji,
+          int? weight,
           bool clearEmoji = false}) =>
       CaptionWord(
         text: text ?? this.text,
@@ -54,6 +57,7 @@ class CaptionWord {
         end: end ?? this.end,
         style: style ?? this.style,
         emoji: clearEmoji ? null : (emoji ?? this.emoji),
+        weight: weight ?? this.weight,
       );
 
   factory CaptionWord.fromJson(Map<String, dynamic> json) => CaptionWord(
@@ -62,6 +66,7 @@ class CaptionWord {
         end: (json['end'] as num).toDouble(),
         style: wordStyleFromString(json['style'] as String? ?? 'normal'),
         emoji: json['emoji'] as String?,
+        weight: ((json['weight'] as num?)?.toInt() ?? 50).clamp(20, 100),
       );
 
   Map<String, dynamic> toJson() => {
@@ -70,7 +75,45 @@ class CaptionWord {
         'end': end,
         'style': wordStyleToString(style),
         if (emoji != null) 'emoji': emoji,
+        'weight': weight,
       };
+}
+
+/// Splits a caption segment into short, weight-aware display lines. The same
+/// grouping is used by the editor's caption list and the shared preview/export
+/// renderer so both show the same words together.
+List<List<int>> captionWordGroups(List<CaptionWord> words) {
+  if (words.isEmpty) return const [];
+
+  const minWordsPerLine = 3;
+  const maxWordsPerLine = 4;
+  const targetWeightPerLine = 200;
+  final groups = <List<int>>[];
+  var group = <int>[];
+  var groupWeight = 0;
+
+  for (var i = 0; i < words.length; i++) {
+    group.add(i);
+    groupWeight += words[i].weight.clamp(20, 100).toInt();
+    if (group.length == maxWordsPerLine ||
+        (group.length >= minWordsPerLine &&
+            groupWeight >= targetWeightPerLine)) {
+      groups.add(group);
+      group = <int>[];
+      groupWeight = 0;
+    }
+  }
+  if (group.isNotEmpty) groups.add(group);
+
+  // Avoid a one or two word tail when the previous line has room.
+  if (groups.length > 1 && groups.last.length < minWordsPerLine) {
+    final previous = groups[groups.length - 2];
+    while (groups.last.length < minWordsPerLine &&
+        previous.length > minWordsPerLine) {
+      groups.last.insert(0, previous.removeLast());
+    }
+  }
+  return groups;
 }
 
 class CaptionSegment {
@@ -81,6 +124,14 @@ class CaptionSegment {
     required this.weight,
     required this.words,
     this.speaker,
+    this.positionX,
+    this.positionY,
+    this.scale,
+    this.rotationDegrees,
+    this.stylePreset,
+    this.fontFamily,
+    this.fontSize,
+    this.motionEnabled,
   });
 
   final double start;
@@ -90,6 +141,14 @@ class CaptionSegment {
       weight; // 0.0-1.0, Gemini's context-weight judgment for this line
   final List<CaptionWord> words;
   final String? speaker;
+  final double? positionX;
+  final double? positionY;
+  final double? scale;
+  final double? rotationDegrees;
+  final String? stylePreset;
+  final String? fontFamily;
+  final int? fontSize;
+  final bool? motionEnabled;
 
   CaptionSegment copyWith({
     String? text,
@@ -97,6 +156,15 @@ class CaptionSegment {
     double? end,
     List<CaptionWord>? words,
     String? speaker,
+    double? positionX,
+    double? positionY,
+    double? scale,
+    double? rotationDegrees,
+    String? stylePreset,
+    String? fontFamily,
+    bool clearFontFamily = false,
+    int? fontSize,
+    bool? motionEnabled,
   }) =>
       CaptionSegment(
         start: start ?? this.start,
@@ -105,6 +173,14 @@ class CaptionSegment {
         weight: weight,
         words: words ?? this.words,
         speaker: speaker ?? this.speaker,
+        positionX: positionX ?? this.positionX,
+        positionY: positionY ?? this.positionY,
+        scale: scale ?? this.scale,
+        rotationDegrees: rotationDegrees ?? this.rotationDegrees,
+        stylePreset: stylePreset ?? this.stylePreset,
+        fontFamily: clearFontFamily ? null : (fontFamily ?? this.fontFamily),
+        fontSize: fontSize ?? this.fontSize,
+        motionEnabled: motionEnabled ?? this.motionEnabled,
       );
 
   factory CaptionSegment.fromJson(Map<String, dynamic> json) => CaptionSegment(
@@ -112,6 +188,14 @@ class CaptionSegment {
         end: (json['end'] as num).toDouble(),
         text: json['text'] as String,
         speaker: json['speaker'] as String?,
+        positionX: (json['position_x'] as num?)?.toDouble(),
+        positionY: (json['position_y'] as num?)?.toDouble(),
+        scale: (json['scale'] as num?)?.toDouble(),
+        rotationDegrees: (json['rotation_degrees'] as num?)?.toDouble(),
+        stylePreset: json['style_preset'] as String?,
+        fontFamily: json['font_family'] as String?,
+        fontSize: (json['font_size'] as num?)?.toInt(),
+        motionEnabled: json['motion_enabled'] as bool?,
         weight: (json['weight'] as num?)?.toDouble() ?? 0.5,
         words: (json['words'] as List<dynamic>? ?? [])
             .map((w) => CaptionWord.fromJson(w as Map<String, dynamic>))
@@ -124,29 +208,172 @@ class CaptionSegment {
         'text': text,
         if (speaker != null) 'speaker': speaker,
         'weight': weight,
+        if (positionX != null) 'position_x': positionX,
+        if (positionY != null) 'position_y': positionY,
+        if (scale != null) 'scale': scale,
+        if (rotationDegrees != null) 'rotation_degrees': rotationDegrees,
+        if (stylePreset != null) 'style_preset': stylePreset,
+        if (fontFamily != null) 'font_family': fontFamily,
+        if (fontSize != null) 'font_size': fontSize,
+        if (motionEnabled != null) 'motion_enabled': motionEnabled,
         'words': words.map((w) => w.toJson()).toList(),
       };
 }
 
 class CaptionTranscript {
-  CaptionTranscript({required this.language, required this.segments});
+  CaptionTranscript({
+    required this.language,
+    required this.segments,
+    this.sourceTrack,
+    List<CaptionTrack> translationTracks = const [],
+    CaptionTrack? translationTrack,
+    this.activeTrack = 'source',
+    this.activeTranslationLanguage,
+  }) : translationTracks = _mergeTranslationTracks(
+          translationTracks,
+          translationTrack,
+        );
+
+  final String language;
+  final List<CaptionSegment> segments;
+  final CaptionTrack? sourceTrack;
+  final List<CaptionTrack> translationTracks;
+  final String activeTrack;
+  final String? activeTranslationLanguage;
+
+  CaptionTrack? get activeTranslationTrack {
+    final selectedLanguage = activeTranslationLanguage ??
+        (activeTrack == 'translation' ? language : null);
+    if (selectedLanguage != null) {
+      for (final track in translationTracks) {
+        if (track.language.toLowerCase() == selectedLanguage.toLowerCase()) {
+          return track;
+        }
+      }
+    }
+    return translationTracks.isEmpty ? null : translationTracks.last;
+  }
+
+  /// Compatibility helper for older editor call sites and saved payloads.
+  CaptionTrack? get translationTrack => activeTranslationTrack;
+
+  CaptionTranscript copyWith({
+    String? language,
+    List<CaptionSegment>? segments,
+    CaptionTrack? sourceTrack,
+    List<CaptionTrack>? translationTracks,
+    CaptionTrack? translationTrack,
+    String? activeTrack,
+    String? activeTranslationLanguage,
+  }) {
+    final nextSegments = segments ?? this.segments;
+    final nextLanguage = language ?? this.language;
+    final nextActiveTrack = activeTrack ?? this.activeTrack;
+    var nextSource = sourceTrack ?? this.sourceTrack;
+    var nextTranslations = translationTracks ?? this.translationTracks;
+    if (translationTrack != null) {
+      nextTranslations = _mergeTranslationTracks(nextTranslations, translationTrack);
+    }
+    final nextTranslationLanguage = activeTranslationLanguage ??
+        this.activeTranslationLanguage ??
+        (nextActiveTrack == 'translation' ? nextLanguage : null);
+    if (segments != null) {
+      final active = CaptionTrack(language: nextLanguage, segments: nextSegments);
+      if (nextActiveTrack == 'translation') {
+        nextTranslations = _mergeTranslationTracks(nextTranslations, active);
+      } else {
+        nextSource = active;
+      }
+    }
+    return CaptionTranscript(
+      language: nextLanguage,
+      segments: nextSegments,
+      sourceTrack: nextSource,
+      translationTracks: nextTranslations,
+      activeTrack: nextActiveTrack,
+      activeTranslationLanguage: nextTranslationLanguage,
+    );
+  }
+
+  factory CaptionTranscript.fromJson(Map<String, dynamic> json) {
+    final activeTrack = json['active_track'] as String? ?? 'source';
+    final savedTracks = (json['translation_tracks'] as List<dynamic>? ?? [])
+        .whereType<Map<String, dynamic>>()
+        .map(CaptionTrack.fromJson)
+        .toList();
+    final legacyTrack = json['translation_track'] is Map<String, dynamic>
+        ? CaptionTrack.fromJson(json['translation_track'] as Map<String, dynamic>)
+        : null;
+    return CaptionTranscript(
+        language: json['language'] as String,
+        segments: (json['segments'] as List<dynamic>? ?? [])
+            .map((s) => CaptionSegment.fromJson(s as Map<String, dynamic>))
+            .toList(),
+        sourceTrack: json['source_track'] is Map<String, dynamic>
+            ? CaptionTrack.fromJson(json['source_track'] as Map<String, dynamic>)
+            : (activeTrack == 'translation'
+                ? null
+                : CaptionTrack.fromActiveJson(json)),
+        translationTracks: savedTracks,
+        translationTrack: legacyTrack,
+        activeTrack: activeTrack,
+        activeTranslationLanguage:
+            json['active_translation_language'] as String? ??
+                (activeTrack == 'translation'
+                    ? json['language'] as String?
+                    : null),
+      );
+  }
+
+  Map<String, dynamic> toJson() {
+    final activeTranslation = activeTranslationTrack;
+    return {
+        'language': language,
+        'segments': segments.map((s) => s.toJson()).toList(),
+        if (sourceTrack != null) 'source_track': sourceTrack!.toJson(),
+        if (translationTracks.isNotEmpty)
+          'translation_tracks':
+              translationTracks.map((track) => track.toJson()).toList(),
+        if (activeTranslation != null)
+          'translation_track': activeTranslation.toJson(),
+        'active_track': activeTrack,
+        if (activeTranslation != null)
+          'active_translation_language': activeTranslation.language,
+      };
+  }
+
+  static List<CaptionTrack> _mergeTranslationTracks(
+    List<CaptionTrack> tracks,
+    CaptionTrack? replacement,
+  ) {
+    final merged = [...tracks];
+    if (replacement == null) return merged;
+    final index = merged.indexWhere((track) =>
+        track.language.toLowerCase() == replacement.language.toLowerCase());
+    if (index < 0) {
+      merged.add(replacement);
+    } else {
+      merged[index] = replacement;
+    }
+    return merged;
+  }
+}
+
+class CaptionTrack {
+  const CaptionTrack({required this.language, required this.segments});
 
   final String language;
   final List<CaptionSegment> segments;
 
-  CaptionTranscript copyWith(
-          {String? language, List<CaptionSegment>? segments}) =>
-      CaptionTranscript(
-          language: language ?? this.language,
-          segments: segments ?? this.segments);
-
-  factory CaptionTranscript.fromJson(Map<String, dynamic> json) =>
-      CaptionTranscript(
+  factory CaptionTrack.fromActiveJson(Map<String, dynamic> json) => CaptionTrack(
         language: json['language'] as String,
         segments: (json['segments'] as List<dynamic>? ?? [])
             .map((s) => CaptionSegment.fromJson(s as Map<String, dynamic>))
             .toList(),
       );
+
+  factory CaptionTrack.fromJson(Map<String, dynamic> json) =>
+      CaptionTrack.fromActiveJson(json);
 
   Map<String, dynamic> toJson() => {
         'language': language,

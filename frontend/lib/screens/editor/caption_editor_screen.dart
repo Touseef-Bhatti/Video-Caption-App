@@ -70,8 +70,18 @@ class _CaptionEditorScreenState extends ConsumerState<CaptionEditorScreen> {
     final result = await showDialog<String>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('Edit word'),
-        content: TextField(controller: controller, autofocus: true),
+        title: Text(wordIndex < 0 ? 'Edit caption line' : 'Edit word'),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          minLines: wordIndex < 0 ? 2 : 1,
+          maxLines: wordIndex < 0 ? 5 : 1,
+          textCapitalization: TextCapitalization.sentences,
+          decoration: const InputDecoration(
+            hintText: 'Type your caption. Use your keyboard’s emoji picker to add emoji.',
+            border: OutlineInputBorder(),
+          ),
+        ),
         actions: [
           TextButton(
               onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
@@ -142,6 +152,68 @@ class _CaptionEditorScreenState extends ConsumerState<CaptionEditorScreen> {
           .read(captionEditorProvider(widget.projectId).notifier)
           .updateSegmentTiming(segIndex, result.$1, result.$2);
     }
+  }
+
+  Future<void> _requestCaptionTranslation(
+    BuildContext context,
+    CaptionTranscript transcript,
+    CaptionEditorNotifier notifier,
+  ) async {
+    final sourceLanguage = transcript.sourceTrack?.language ??
+        (transcript.activeTrack == 'source'
+            ? transcript.language
+            : 'English');
+    final language = await showDialog<String>(
+      context: context,
+      builder: (_) => _CaptionLanguageDialog(
+        currentLanguage: sourceLanguage,
+        targetLanguage: transcript.translationTrack?.language,
+      ),
+    );
+    if (language == null || !context.mounted) return;
+    final savedMatches = transcript.translationTracks
+        .where((track) =>
+            track.language.toLowerCase() == language.toLowerCase())
+        .toList();
+    if (savedMatches.isNotEmpty) {
+      notifier.selectCaptionTrack(
+        'translation',
+        language: savedMatches.first.language,
+      );
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text('Showing saved ${savedMatches.first.language} translation.'),
+      ));
+      return;
+    }
+    final changed = await notifier.translateTo(language);
+    if (changed) notifier.selectCaptionTrack('translation');
+    if (!context.mounted) return;
+    final error = ref
+        .read(captionEditorProvider(widget.projectId))
+        .errorMessage;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text(changed
+          ? 'Translation generated in $language and selected for preview. Save & render to update your video.'
+          : error ?? 'Could not generate translation.'),
+    ));
+  }
+
+  Future<void> _translateCaptionTo(
+    BuildContext context,
+    CaptionEditorNotifier notifier,
+    String language,
+  ) async {
+    final changed = await notifier.translateTo(language);
+    if (changed) notifier.selectCaptionTrack('translation');
+    if (!context.mounted) return;
+    final error = ref
+        .read(captionEditorProvider(widget.projectId))
+        .errorMessage;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text(changed
+          ? 'Translation generated in $language and selected for preview. Save & render to update your video.'
+          : error ?? 'Could not generate translation.'),
+    ));
   }
 
   Future<void> _renderAgain() async {
@@ -299,15 +371,20 @@ class _CaptionEditorScreenState extends ConsumerState<CaptionEditorScreen> {
           overrides: state.styleOverrides,
           videoFormat: state.videoFormat,
           availableHeight: availableHeight,
-          onTransformChanged: (x, y, scale, rotation) =>
-              notifier.setStyleOverrides(
-            state.styleOverrides.copyWith(
-              positionX: x,
-              positionY: y,
-              scale: scale,
-              rotationDegrees: rotation,
-            ),
-          ),
+          onTransformChanged: (x, y, scale, rotation) {
+            final index = state.transcript!.segments.indexWhere((segment) =>
+                _positionSeconds >= segment.start &&
+                _positionSeconds < segment.end);
+            if (index >= 0) {
+              notifier.updateSegmentTransform(
+                index,
+                x: x,
+                y: y,
+                scale: scale,
+                rotationDegrees: rotation,
+              );
+            }
+          },
           onDownload: _downloadLatest,
           isDownloading: _isDownloading,
         );
@@ -315,8 +392,11 @@ class _CaptionEditorScreenState extends ConsumerState<CaptionEditorScreen> {
       projectId: widget.projectId,
       state: state,
       videoFormat: state.videoFormat,
+      currentTime: _positionSeconds,
       onEditWord: _editWord,
       onEditTiming: _editTiming,
+      onRequestTranslation: _requestCaptionTranslation,
+      onTranslateTo: _translateCaptionTo,
       onSeek: (s) => _video?.seekTo(Duration(milliseconds: (s * 1000).round())),
     );
 
@@ -656,18 +736,32 @@ class _ControlsPane extends ConsumerWidget {
     required this.projectId,
     required this.state,
     required this.videoFormat,
+    required this.currentTime,
     required this.onEditWord,
     required this.onEditTiming,
+    required this.onRequestTranslation,
+    required this.onTranslateTo,
     required this.onSeek,
   });
 
   final String projectId;
   final CaptionEditorState state;
   final String videoFormat;
+  final double currentTime;
   final Future<void> Function(int segIndex, int wordIndex, String current)
       onEditWord;
   final Future<void> Function(int segIndex, CaptionSegment segment)
       onEditTiming;
+  final Future<void> Function(
+    BuildContext context,
+    CaptionTranscript transcript,
+    CaptionEditorNotifier notifier,
+  ) onRequestTranslation;
+  final Future<void> Function(
+    BuildContext context,
+    CaptionEditorNotifier notifier,
+    String language,
+  ) onTranslateTo;
   final void Function(double seconds) onSeek;
 
   @override
@@ -675,13 +769,49 @@ class _ControlsPane extends ConsumerWidget {
     final notifier = ref.read(captionEditorProvider(projectId).notifier);
     final theme = Theme.of(context);
     final o = state.styleOverrides;
-    final selectedPreset = presetInfoFor(state.stylePreset);
+    final currentLineIndex = state.transcript!.segments.indexWhere(
+      (segment) => currentTime >= segment.start && currentTime < segment.end,
+    );
+    final currentLine = state.transcript!.segments.cast<CaptionSegment?>().firstWhere(
+          (segment) => segment != null &&
+              currentTime >= segment.start && currentTime < segment.end,
+          orElse: () => null,
+        );
+    final automaticCaptionFont = currentLine == null
+        ? captionFontForTranscript(state.transcript!)
+        : captionFontForText(currentLine.text, state.transcript!.language);
+    final activeCaptionFont = currentLine?.fontFamily == 'auto'
+        ? automaticCaptionFont
+        : currentLine?.fontFamily ?? o.fontFamily ?? automaticCaptionFont;
+    final selectedPreset = presetInfoFor(currentLine?.stylePreset ?? state.stylePreset);
+    final effectiveY = currentLine?.positionY ?? o.positionY ??
+        _positionY(o.position ?? _presetPosition(state.stylePreset));
+    final selectedPosition = effectiveY < 0.34
+        ? 'top'
+        : effectiveY < 0.68
+            ? 'center'
+            : 'bottom';
+
+    void updateCurrentLineTransform({double? x, double? y, double? scale, double? rotation}) {
+      if (currentLineIndex < 0) return;
+      notifier.updateSegmentTransform(
+        currentLineIndex,
+        x: x ?? currentLine!.positionX ?? o.positionX ?? 0.5,
+        y: y ?? currentLine!.positionY ?? o.positionY ??
+            _positionY(o.position ?? _presetPosition(state.stylePreset)),
+        scale: scale ?? currentLine!.scale ?? o.scale,
+        rotationDegrees: rotation ?? currentLine!.rotationDegrees ?? o.rotationDegrees,
+      );
+    }
 
     return DefaultTabController(
       length: 2,
       child: Column(
         children: [
-          const TabBar(tabs: [Tab(text: 'Style'), Tab(text: 'Captions')]),
+          const TabBar(tabs: [
+            Tab(icon: Icon(Icons.tune), text: 'Style'),
+            Tab(icon: Icon(Icons.subtitles_outlined), text: 'Captions'),
+          ]),
           Expanded(
             child: TabBarView(
               children: [
@@ -689,7 +819,50 @@ class _ControlsPane extends ConsumerWidget {
                 ListView(
                   padding: const EdgeInsets.all(AppSpacing.md),
                   children: [
-                    Text('Video format', style: theme.textTheme.titleMedium),
+                    if (currentLine != null) ...[
+                      Card(
+                        child: Padding(
+                          padding: const EdgeInsets.all(AppSpacing.md),
+                          child: Row(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Icon(Icons.subtitles,
+                                  color: theme.colorScheme.primary),
+                              const SizedBox(width: AppSpacing.sm),
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text('Selected caption line',
+                                        style: theme.textTheme.labelLarge),
+                                    const SizedBox(height: 4),
+                                    Text(currentLine.text,
+                                        style: theme.textTheme.bodyMedium),
+                                    const SizedBox(height: 4),
+                                    Text(
+                                      'Word weights: ${currentLine.words.isEmpty ? 'not available' : currentLine.words.map((word) => word.weight).join(' · ')}',
+                                      style: theme.textTheme.bodySmall,
+                                    ),
+                                    const SizedBox(height: 4),
+                                    Text('Template, font, animation, size, and placement are saved for this line.',
+                                        style: theme.textTheme.bodySmall),
+                                    const SizedBox(height: 4),
+                                    Text('Tap a caption timestamp in Captions to select another line.',
+                                        style: theme.textTheme.bodySmall),
+                                  ],
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: AppSpacing.sm),
+                    ],
+                    _EditorSectionHeading(
+                      icon: Icons.movie_creation_outlined,
+                      title: 'Canvas',
+                      subtitle: 'Set the output shape for your captions.',
+                    ),
                     const SizedBox(height: AppSpacing.sm),
                     DropdownButtonFormField<String>(
                       value: videoFormat,
@@ -709,13 +882,10 @@ class _ControlsPane extends ConsumerWidget {
                       },
                     ),
                     const SizedBox(height: AppSpacing.lg),
-                    Row(
-                      children: [
-                        Text('Caption templates',
-                            style: theme.textTheme.titleMedium),
-                        const SizedBox(width: 6),
-                        const Icon(Icons.auto_awesome, size: 17),
-                      ],
+                    _EditorSectionHeading(
+                      icon: Icons.auto_awesome_outlined,
+                      title: 'Caption templates',
+                      subtitle: 'Choose a template for the caption line shown in the preview.',
                     ),
                     const SizedBox(height: AppSpacing.sm),
                     SizedBox(
@@ -729,14 +899,20 @@ class _ControlsPane extends ConsumerWidget {
                           final p = kCaptionPresets[i];
                           return CaptionStyleCard(
                             preset: p,
-                            selected: p.id == state.stylePreset,
-                            onTap: () => notifier.setPreset(p.id),
+                            selected: p.id == (currentLine?.stylePreset ?? state.stylePreset),
+                            onTap: () => currentLineIndex >= 0
+                                ? notifier.updateSegmentStyle(currentLineIndex, stylePreset: p.id)
+                                : notifier.setPreset(p.id),
                           );
                         },
                       ),
                     ),
                     const SizedBox(height: AppSpacing.lg),
-                    Text('Colors', style: theme.textTheme.titleMedium),
+                    _EditorSectionHeading(
+                      icon: Icons.palette_outlined,
+                      title: 'Colors',
+                      subtitle: 'Tune text, emphasis, and panel colors.',
+                    ),
                     const SizedBox(height: AppSpacing.sm),
                     Wrap(
                       spacing: AppSpacing.lg,
@@ -783,24 +959,26 @@ class _ControlsPane extends ConsumerWidget {
                       onChanged: (v) => notifier
                           .setStyleOverrides(o.copyWith(backgroundOpacity: v)),
                     ),
-                    Text('Size and position',
-                        style: theme.textTheme.titleMedium),
+                    _EditorSectionHeading(
+                      icon: Icons.open_with,
+                      title: 'Typography and placement',
+                      subtitle: 'Drag the dotted caption box in the preview to place it. Pinch to scale.',
+                    ),
                     const SizedBox(height: AppSpacing.sm),
                     DropdownButtonFormField<String>(
-                      value: o.fontFamily ?? 'auto',
+                      value: currentLine?.fontFamily ?? o.fontFamily ?? 'auto',
                       decoration: const InputDecoration(
                         labelText: 'Font family',
-                        helperText:
-                            'Automatic selects a font for the caption language. You can choose a different script font here.',
+                        helperText: 'Automatic uses the current caption text, not the spoken-language setting.',
                         border: OutlineInputBorder(),
                         isDense: true,
                       ),
-                      items: const [
+                      items: [
                         DropdownMenuItem(
                             value: 'auto',
-                            child: Text('Automatic for caption language')),
+                            child: Text('Automatic · ${captionFontLabel(automaticCaptionFont)}')),
                         DropdownMenuItem(
-                            value: 'Caption Sans', child: Text('Noto Sans')),
+                            value: 'Caption Sans', child: Text('Noto Sans · Clean')),
                         DropdownMenuItem(
                             value: 'Caption Arabic',
                             child: Text('Noto Naskh Arabic')),
@@ -810,20 +988,31 @@ class _ControlsPane extends ConsumerWidget {
                       ],
                       onChanged: (value) {
                         if (value == null) return;
-                        notifier.setStyleOverrides(o.copyWith(
-                          fontFamily: value == 'auto' ? null : value,
-                          clearFontFamily: value == 'auto',
-                        ));
+                        if (currentLineIndex >= 0) {
+                          notifier.updateSegmentStyle(currentLineIndex,
+                              fontFamily: value);
+                        } else {
+                          notifier.setStyleOverrides(o.copyWith(
+                            fontFamily: value == 'auto' ? null : value,
+                            clearFontFamily: value == 'auto',
+                          ));
+                        }
                       },
                     ),
+                    Text(
+                      'Font for this caption text: ${captionFontLabel(activeCaptionFont)}',
+                      style: theme.textTheme.bodySmall,
+                    ),
+                    const SizedBox(height: AppSpacing.sm),
                     Slider(
                       min: 16,
                       max: 120,
                       divisions: 52,
-                      value: (o.fontSize ?? 44).clamp(16, 120).toDouble(),
-                      label: '${o.fontSize ?? 44}',
-                      onChanged: (v) => notifier
-                          .setStyleOverrides(o.copyWith(fontSize: v.round())),
+                      value: (currentLine?.fontSize ?? o.fontSize ?? 44).clamp(16, 120).toDouble(),
+                      label: '${currentLine?.fontSize ?? o.fontSize ?? 44}',
+                      onChanged: (v) => currentLineIndex >= 0
+                          ? notifier.updateSegmentStyle(currentLineIndex, fontSize: v.round())
+                          : notifier.setStyleOverrides(o.copyWith(fontSize: v.round())),
                     ),
                     SwitchListTile(
                       contentPadding: EdgeInsets.zero,
@@ -851,7 +1040,7 @@ class _ControlsPane extends ConsumerWidget {
                     ),
                     SwitchListTile(
                       contentPadding: EdgeInsets.zero,
-                      title: const Text('Show suggested emojis'),
+                      title: const Text('Show manually added emojis'),
                       value: o.emojisEnabled,
                       onChanged: (v) => notifier
                           .setStyleOverrides(o.copyWith(emojisEnabled: v)),
@@ -859,29 +1048,28 @@ class _ControlsPane extends ConsumerWidget {
                     SwitchListTile(
                       contentPadding: EdgeInsets.zero,
                       title: const Text('Motion animations'),
-                      value: o.motionEnabled,
-                      onChanged: (v) => notifier
-                          .setStyleOverrides(o.copyWith(motionEnabled: v)),
+                      value: currentLine?.motionEnabled ?? o.motionEnabled,
+                      onChanged: (v) => currentLineIndex >= 0
+                          ? notifier.updateSegmentStyle(currentLineIndex, motionEnabled: v)
+                          : notifier.setStyleOverrides(o.copyWith(motionEnabled: v)),
                     ),
                     Text('Caption scale', style: theme.textTheme.titleSmall),
                     Slider(
                       min: 0.5,
                       max: 2,
                       divisions: 30,
-                      value: o.scale.clamp(0.5, 2).toDouble(),
-                      label: '${(o.scale * 100).round()}%',
-                      onChanged: (v) =>
-                          notifier.setStyleOverrides(o.copyWith(scale: v)),
+                      value: (currentLine?.scale ?? o.scale).clamp(0.5, 2).toDouble(),
+                      label: '${((currentLine?.scale ?? o.scale) * 100).round()}%',
+                      onChanged: (v) => updateCurrentLineTransform(scale: v),
                     ),
                     Text('Rotation', style: theme.textTheme.titleSmall),
                     Slider(
                       min: -30,
                       max: 30,
                       divisions: 60,
-                      value: o.rotationDegrees.clamp(-30, 30).toDouble(),
-                      label: '${o.rotationDegrees.round()}°',
-                      onChanged: (v) => notifier
-                          .setStyleOverrides(o.copyWith(rotationDegrees: v)),
+                      value: (currentLine?.rotationDegrees ?? o.rotationDegrees).clamp(-30, 30).toDouble(),
+                      label: '${(currentLine?.rotationDegrees ?? o.rotationDegrees).round()}°',
+                      onChanged: (v) => updateCurrentLineTransform(rotation: v),
                     ),
                     SegmentedButton<String>(
                       segments: const [
@@ -890,17 +1078,21 @@ class _ControlsPane extends ConsumerWidget {
                         ButtonSegment(value: 'bottom', label: Text('Bottom')),
                       ],
                       selected: {
-                        o.position ?? _presetPosition(state.stylePreset)
+                        currentLineIndex >= 0
+                            ? selectedPosition
+                            : o.position ?? _presetPosition(state.stylePreset)
                       },
                       onSelectionChanged: (s) {
                         final position = s.first;
-                        notifier.setStyleOverrides(
-                          o.copyWith(
+                        if (currentLineIndex >= 0) {
+                          updateCurrentLineTransform(x: 0.5, y: _positionY(position));
+                        } else {
+                          notifier.setStyleOverrides(o.copyWith(
                             position: position,
                             positionX: 0.5,
                             positionY: _positionY(position),
-                          ),
-                        );
+                          ));
+                        }
                       },
                     ),
                     const SizedBox(height: AppSpacing.sm),
@@ -944,6 +1136,59 @@ class _ControlsPane extends ConsumerWidget {
                             transcript: state.transcript!,
                             notifier: notifier,
                             isTranslating: state.isTranslating,
+                            onRequestTranslation: onRequestTranslation,
+                            onTranslateTo: onTranslateTo,
+                            fontFamily: activeCaptionFont,
+                          ),
+                          const SizedBox(height: AppSpacing.md),
+                          Text('Caption track',
+                              style: theme.textTheme.titleSmall),
+                          const SizedBox(height: AppSpacing.xs),
+                          Wrap(
+                            spacing: AppSpacing.xs,
+                            runSpacing: AppSpacing.xs,
+                            crossAxisAlignment: WrapCrossAlignment.center,
+                            children: [
+                              ChoiceChip(
+                                avatar: const Icon(
+                                    Icons.record_voice_over_outlined, size: 18),
+                                label: const Text('Caption text'),
+                                selected:
+                                    state.transcript!.activeTrack == 'source',
+                                onSelected: (_) =>
+                                    notifier.selectCaptionTrack('source'),
+                              ),
+                              for (final translation
+                                  in state.transcript!.translationTracks)
+                                ChoiceChip(
+                                  avatar: const Icon(Icons.translate, size: 18),
+                                  label: Text(translation.language),
+                                  selected: state.transcript!.activeTrack ==
+                                          'translation' &&
+                                      state.transcript!.language.toLowerCase() ==
+                                          translation.language.toLowerCase(),
+                                  onSelected: (_) => notifier.selectCaptionTrack(
+                                    'translation',
+                                    language: translation.language,
+                                  ),
+                                ),
+                              ActionChip(
+                                avatar: const Icon(Icons.add, size: 18),
+                                label: const Text('Add translation'),
+                                onPressed: () => onRequestTranslation(
+                                  context,
+                                  state.transcript!,
+                                  notifier,
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: AppSpacing.xs),
+                          Text(
+                            state.transcript!.activeTrack == 'source'
+                                ? 'Caption text follows the words spoken in the video. It is shown in the preview; your translation stays separate.'
+                                : 'Translation is shown in the preview. Save & render to update the downloadable video; the original caption text stays separate.',
+                            style: theme.textTheme.bodySmall,
                           ),
                           const SizedBox(height: AppSpacing.md),
                           Wrap(
@@ -962,7 +1207,7 @@ class _ControlsPane extends ConsumerWidget {
                             ],
                           ),
                           Text(
-                            'Tap a word to cycle normal / highlight / emphasis. Long-press to edit its text. Tap the emoji control to add or remove Gemini-suggested emojis.',
+                            'Tap a word to change its emphasis. Double-tap or use its edit icon to change the text; tap a caption line to edit it. Add an emoji manually from the emoji button, or remove it.',
                             style: theme.textTheme.bodySmall,
                           ),
                         ],
@@ -1004,75 +1249,140 @@ class _CaptionLanguageControl extends StatelessWidget {
     required this.transcript,
     required this.notifier,
     required this.isTranslating,
+    required this.onRequestTranslation,
+    required this.onTranslateTo,
+    required this.fontFamily,
   });
 
   final CaptionTranscript transcript;
   final CaptionEditorNotifier notifier;
   final bool isTranslating;
+  final Future<void> Function(
+    BuildContext context,
+    CaptionTranscript transcript,
+    CaptionEditorNotifier notifier,
+  ) onRequestTranslation;
+  final Future<void> Function(
+    BuildContext context,
+    CaptionEditorNotifier notifier,
+    String language,
+  ) onTranslateTo;
+  final String fontFamily;
 
   @override
-  Widget build(BuildContext context) => Column(
+  Widget build(BuildContext context) {
+    final sourceLanguage = transcript.sourceTrack?.language ?? transcript.language;
+    final currentTarget = transcript.translationTrack?.language;
+    final selectedTarget = currentTarget == null
+        ? null
+        : captionLanguages.cast<String?>().firstWhere(
+            (language) =>
+                language?.toLowerCase() == currentTarget.toLowerCase(),
+            orElse: () => null,
+          );
+
+    return Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text('Caption text language: ${transcript.language}',
+          Text(
+              'Preview uses: ${transcript.activeTrack == 'source' ? 'Caption text' : 'Translation'} · ${transcript.language}',
               style: Theme.of(context).textTheme.titleSmall),
+          Text('Font used: ${captionFontLabel(fontFamily)}',
+              style: Theme.of(context).textTheme.bodySmall),
           const SizedBox(height: AppSpacing.xs),
-          OutlinedButton.icon(
-            onPressed: isTranslating
+          DropdownButtonFormField<String>(
+            value: selectedTarget,
+            decoration: InputDecoration(
+              labelText: isTranslating
+                  ? 'Translating captions…'
+                  : 'Translate caption text to',
+              prefixIcon: const Icon(Icons.translate),
+              border: const OutlineInputBorder(),
+            ),
+            hint: const Text('Choose a language'),
+            items: [
+              for (final language in captionLanguages)
+                DropdownMenuItem(
+                  value: language,
+                  enabled: language.toLowerCase() !=
+                      sourceLanguage.toLowerCase(),
+                  child: Text(language),
+                ),
+              const DropdownMenuItem(
+                  value: 'other', child: Text('Other language…')),
+            ],
+            onChanged: isTranslating
                 ? null
-                : () async {
-                    final language = await showDialog<String>(
-                      context: context,
-                      builder: (_) => _CaptionLanguageDialog(
-                        currentLanguage: transcript.language,
-                      ),
-                    );
-                    if (language == null || !context.mounted) return;
-                    final changed = await notifier.translateTo(language);
-                    if (!context.mounted) return;
-                    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-                      content: Text(changed
-                          ? 'Captions changed to $language. Save to keep the change.'
-                          : notifier.state.errorMessage ??
-                              'Could not change caption language.'),
-                    ));
+                : (language) {
+                    if (language == null) return;
+                    if (language == 'other') {
+                      onRequestTranslation(context, transcript, notifier);
+                    } else {
+                      final matchingTracks = transcript.translationTracks
+                          .where((track) =>
+                              track.language.toLowerCase() ==
+                              language.toLowerCase())
+                          .toList();
+                      final existingTrack = matchingTracks.isEmpty
+                          ? null
+                          : matchingTracks.first;
+                      if (existingTrack != null) {
+                        notifier.selectCaptionTrack(
+                          'translation',
+                          language: existingTrack.language,
+                        );
+                      } else {
+                        onTranslateTo(context, notifier, language);
+                      }
+                    }
                   },
-            icon: isTranslating
-                ? const SizedBox.square(
-                    dimension: 16,
-                    child: CircularProgressIndicator(strokeWidth: 2),
-                  )
-                : const Icon(Icons.translate),
-            label: Text(isTranslating
-                ? 'Generating captions…'
-                : 'Change language with Gemini'),
           ),
           if (isTranslating) const LinearProgressIndicator(),
         ],
       );
+  }
 }
 
 class _CaptionLanguageDialog extends StatefulWidget {
-  const _CaptionLanguageDialog({required this.currentLanguage});
+  const _CaptionLanguageDialog({
+    required this.currentLanguage,
+    this.targetLanguage,
+  });
 
   final String currentLanguage;
+  final String? targetLanguage;
 
   @override
   State<_CaptionLanguageDialog> createState() => _CaptionLanguageDialogState();
 }
 
 class _CaptionLanguageDialogState extends State<_CaptionLanguageDialog> {
+  String get _targetLanguage =>
+      _selected == 'other' ? _customLanguage.text.trim() : _selected;
+
+  bool get _canGenerate =>
+      _targetLanguage.length >= 2 &&
+      _targetLanguage.toLowerCase() != widget.currentLanguage.toLowerCase();
+
+  bool _isAvailable(String? language) => language != null &&
+      captionLanguages.any(
+          (item) => item.toLowerCase() == language.toLowerCase());
+
   late final TextEditingController _customLanguage = TextEditingController(
-    text: captionLanguages.any((language) =>
-            language.toLowerCase() == widget.currentLanguage.toLowerCase())
+    text: _isAvailable(widget.targetLanguage)
         ? ''
-        : widget.currentLanguage,
+        : (widget.targetLanguage ?? ''),
   );
-  late String _selected = captionLanguages.any((language) =>
-          language.toLowerCase() == widget.currentLanguage.toLowerCase())
+  late String _selected = _isAvailable(widget.targetLanguage)
       ? captionLanguages.firstWhere((language) =>
-          language.toLowerCase() == widget.currentLanguage.toLowerCase())
-      : 'other';
+          language.toLowerCase() == widget.targetLanguage!.toLowerCase())
+      : widget.targetLanguage != null
+          ? 'other'
+          : captionLanguages.firstWhere(
+              (language) =>
+                  language.toLowerCase() !=
+                  widget.currentLanguage.toLowerCase(),
+              orElse: () => captionLanguages.first);
 
   @override
   void dispose() {
@@ -1082,16 +1392,26 @@ class _CaptionLanguageDialogState extends State<_CaptionLanguageDialog> {
 
   @override
   Widget build(BuildContext context) => AlertDialog(
-        title: const Text('Caption text language'),
+        title: const Text('Translate captions'),
         content: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
+            Text(
+              'Choose the language you want captions translated into. Source language: ${widget.currentLanguage}.',
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
+            const SizedBox(height: AppSpacing.sm),
             DropdownButtonFormField<String>(
               value: _selected,
               decoration: const InputDecoration(labelText: 'Language'),
               items: [
                 for (final language in captionLanguages)
-                  DropdownMenuItem(value: language, child: Text(language)),
+                  DropdownMenuItem(
+                    value: language,
+                    enabled: language.toLowerCase() !=
+                        widget.currentLanguage.toLowerCase(),
+                    child: Text(language),
+                  ),
                 const DropdownMenuItem(
                     value: 'other', child: Text('Other language…')),
               ],
@@ -1116,15 +1436,9 @@ class _CaptionLanguageDialogState extends State<_CaptionLanguageDialog> {
             child: const Text('Cancel'),
           ),
           FilledButton(
-            onPressed:
-                _selected == 'other' && _customLanguage.text.trim().length < 2
-                    ? null
-                    : () => Navigator.pop(
-                          context,
-                          _selected == 'other'
-                              ? _customLanguage.text.trim()
-                              : _selected,
-                        ),
+            onPressed: _canGenerate
+                ? () => Navigator.pop(context, _targetLanguage)
+                : null,
             child: const Text('Generate'),
           ),
         ],
@@ -1169,6 +1483,7 @@ class _SegmentRow extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final wordGroups = captionWordGroups(segment.words);
     Color? chipColor(WordStyle s) => switch (s) {
           WordStyle.normal => null,
           WordStyle.highlight => AppColors.warning.withOpacity(0.2),
@@ -1189,64 +1504,59 @@ class _SegmentRow extends StatelessWidget {
                         ?.copyWith(color: theme.colorScheme.primary)),
               ),
             ),
-            const Spacer(),
-            IconButton(
-              tooltip: 'Adjust timing',
-              visualDensity: VisualDensity.compact,
-              icon: const Icon(Icons.schedule, size: 18),
-              onPressed: onEditTiming,
-            ),
-            PopupMenuButton<String>(
-              tooltip: 'Caption actions',
-              onSelected: (action) {
-                switch (action) {
-                  case 'split':
-                    onSplit();
-                    break;
-                  case 'merge':
-                    onMerge();
-                    break;
-                  case 'delete':
-                    onDelete();
-                    break;
-                }
-              },
-              itemBuilder: (_) => [
-                PopupMenuItem(
-                    value: 'split',
-                    enabled: canSplit,
-                    child: const Text('Split caption')),
-                PopupMenuItem(
-                    value: 'merge',
-                    enabled: canMergeNext,
-                    child: const Text('Merge with next')),
-                const PopupMenuItem(
-                    value: 'delete', child: Text('Delete caption')),
-              ],
-            ),
-            Tooltip(
-              message: 'How important Gemini judged this line (drives styling)',
-              child: Text('weight ${(segment.weight * 100).round()}%',
-                  style: theme.textTheme.bodySmall),
-            ),
           ],
         ),
         const SizedBox(height: AppSpacing.xs),
+        Wrap(
+          spacing: AppSpacing.xs,
+          runSpacing: 0,
+          children: [
+            TextButton.icon(
+              onPressed: onEditTiming,
+              icon: const Icon(Icons.schedule, size: 17),
+              label: const Text('Timing'),
+            ),
+            TextButton.icon(
+              onPressed: canSplit ? onSplit : null,
+              icon: const Icon(Icons.call_split, size: 17),
+              label: const Text('Split'),
+            ),
+            TextButton.icon(
+              onPressed: canMergeNext ? onMerge : null,
+              icon: const Icon(Icons.call_merge, size: 17),
+              label: const Text('Merge'),
+            ),
+            TextButton.icon(
+              onPressed: onDelete,
+              icon: const Icon(Icons.delete_outline, size: 17),
+              label: const Text('Delete'),
+            ),
+          ],
+        ),
         if (segment.words.isEmpty)
           // No word-level data: edit the whole line instead.
           InkWell(
               onTap: onEditSegment,
               child: Text(segment.text, style: theme.textTheme.bodyLarge))
         else
-          Wrap(
-            spacing: 4,
-            runSpacing: 4,
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              for (var w = 0; w < segment.words.length; w++)
-                GestureDetector(
+              for (final group in wordGroups)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 6),
+                  child: Wrap(
+                    spacing: 4,
+                    runSpacing: 4,
+                    children: [
+                      for (final w in group)
+                        GestureDetector(
                   onTap: () => onTapWord(w),
                   onLongPress: () => onLongPressWord(w),
-                  child: Container(
+                  onDoubleTap: () => onLongPressWord(w),
+                  child: Tooltip(
+                    message: 'Context weight: ${segment.words[w].weight}/100',
+                    child: Container(
                     padding:
                         const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
                     decoration: BoxDecoration(
@@ -1256,27 +1566,90 @@ class _SegmentRow extends StatelessWidget {
                           color: theme.dividerTheme.color ?? Colors.grey),
                     ),
                     child: Row(mainAxisSize: MainAxisSize.min, children: [
-                      Text(
-                        segment.words[w].text,
-                        style: theme.textTheme.bodyMedium?.copyWith(
-                          fontWeight: segment.words[w].style == WordStyle.normal
-                              ? FontWeight.w400
-                              : FontWeight.w700,
-                        ),
+                      Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Text(
+                            segment.words[w].text,
+                            style: theme.textTheme.bodyMedium?.copyWith(
+                              fontWeight: segment.words[w].style == WordStyle.normal
+                                  ? FontWeight.w400
+                                  : FontWeight.w700,
+                            ),
+                          ),
+                          Text(
+                            '${segment.words[w].weight}/100',
+                            style: theme.textTheme.labelSmall?.copyWith(
+                              color: theme.colorScheme.onSurfaceVariant,
+                            ),
+                          ),
+                        ],
                       ),
                       if (segment.words[w].emoji != null) ...[
                         const SizedBox(width: 4),
                         Text(segment.words[w].emoji!),
                       ],
+                      IconButton(
+                        tooltip: 'Edit word text',
+                        visualDensity: VisualDensity.compact,
+                        constraints: const BoxConstraints.tightFor(
+                            width: 30, height: 30),
+                        padding: EdgeInsets.zero,
+                        iconSize: 15,
+                        icon: const Icon(Icons.edit_outlined),
+                        onPressed: () => onLongPressWord(w),
+                      ),
                       PopupMenuButton<String>(
                         tooltip: 'Add or remove emoji',
                         padding: EdgeInsets.zero,
                         constraints: const BoxConstraints(minWidth: 48),
                         iconSize: 16,
                         icon: const Icon(Icons.add_reaction_outlined),
-                        onSelected: (value) =>
-                            onSetEmoji(w, value == '__remove__' ? null : value),
+                        onSelected: (value) async {
+                          if (value == '__custom__') {
+                            final controller = TextEditingController(
+                                text: segment.words[w].emoji ?? '');
+                            final emoji = await showDialog<String>(
+                              context: context,
+                              builder: (dialogContext) => AlertDialog(
+                                title: const Text('Add an emoji'),
+                                content: TextField(
+                                  controller: controller,
+                                  autofocus: true,
+                                  decoration: const InputDecoration(
+                                    labelText: 'Emoji',
+                                    hintText: 'Type or paste any emoji',
+                                    border: OutlineInputBorder(),
+                                  ),
+                                ),
+                                actions: [
+                                  TextButton(
+                                    onPressed: () =>
+                                        Navigator.pop(dialogContext),
+                                    child: const Text('Cancel'),
+                                  ),
+                                  FilledButton(
+                                    onPressed: () => Navigator.pop(
+                                        dialogContext, controller.text.trim()),
+                                    child: const Text('Apply'),
+                                  ),
+                                ],
+                              ),
+                            );
+                            controller.dispose();
+                            if (emoji != null && emoji.isNotEmpty) {
+                              onSetEmoji(w, emoji);
+                            }
+                          } else {
+                            onSetEmoji(
+                                w, value == '__remove__' ? null : value);
+                          }
+                        },
                         itemBuilder: (_) => [
+                          const PopupMenuItem(
+                            value: '__custom__',
+                            child: Text('Type or paste an emoji…'),
+                          ),
                           if (segment.words[w].emoji != null)
                             const PopupMenuItem(
                                 value: '__remove__',
@@ -1297,11 +1670,54 @@ class _SegmentRow extends StatelessWidget {
                         ],
                       ),
                     ]),
+                    // Word importance is also used to group words into short
+                    // caption lines in the preview and downloaded video.
+                    ),
+                  ),
+                      ),
+                    ],
                   ),
                 ),
             ],
           ),
       ],
+    );
+  }
+}
+
+class _EditorSectionHeading extends StatelessWidget {
+  const _EditorSectionHeading({
+    required this.icon,
+    required this.title,
+    required this.subtitle,
+  });
+
+  final IconData icon;
+  final String title;
+  final String subtitle;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Padding(
+      padding: const EdgeInsets.only(bottom: AppSpacing.sm),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(icon, size: 20, color: theme.colorScheme.primary),
+          const SizedBox(width: AppSpacing.sm),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(title, style: theme.textTheme.titleMedium),
+                const SizedBox(height: 2),
+                Text(subtitle, style: theme.textTheme.bodySmall),
+              ],
+            ),
+          ),
+        ],
+      ),
     );
   }
 }

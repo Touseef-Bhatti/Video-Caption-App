@@ -145,4 +145,37 @@ def validate_caption_configuration(template_id: str, caption_data: dict,
                 raise ValueError("Word timings must fall inside their caption segment.")
             previous_word_end = word.end
 
-    return resolved_id, transcript.model_dump(), overrides.model_dump(exclude_none=True)
+    clean_transcript = transcript.model_dump()
+    # The active track remains the render payload. Keep parallel source and
+    # translation tracks beside it so switching tracks never discards edits.
+    for key in ("source_track", "translation_track"):
+        track_data = caption_data.get(key)
+        if track_data is not None:
+            try:
+                track = GeminiTranscriptResponse.model_validate(track_data)
+            except ValidationError as exc:
+                raise ValueError("Caption track data is invalid.") from exc
+            clean_transcript[key] = track.model_dump()
+    translation_tracks = caption_data.get("translation_tracks", [])
+    if not isinstance(translation_tracks, list) or len(translation_tracks) > 50:
+        raise ValueError("Caption translation tracks are invalid.")
+    if translation_tracks:
+        clean_transcript["translation_tracks"] = []
+        for track_data in translation_tracks:
+            try:
+                track = GeminiTranscriptResponse.model_validate(track_data)
+            except ValidationError as exc:
+                raise ValueError("Caption track data is invalid.") from exc
+            clean_transcript["translation_tracks"].append(track.model_dump())
+    active_track = caption_data.get("active_track", "source")
+    if active_track not in {"source", "translation"}:
+        raise ValueError("Caption track selection is invalid.")
+    if active_track == "translation" and "translation_track" not in clean_transcript:
+        raise ValueError("The selected translation track is missing.")
+    active_translation_language = caption_data.get("active_translation_language")
+    if active_translation_language is not None:
+        clean_transcript["active_translation_language"] = str(
+            active_translation_language
+        )
+    clean_transcript["active_track"] = active_track
+    return resolved_id, clean_transcript, overrides.model_dump(exclude_none=True)

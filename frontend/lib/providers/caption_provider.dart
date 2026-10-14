@@ -410,6 +410,62 @@ class CaptionEditorNotifier extends StateNotifier<CaptionEditorState> {
     );
   }
 
+  void updateSegmentTransform(
+    int segmentIndex, {
+    required double x,
+    required double y,
+    required double scale,
+    required double rotationDegrees,
+  }) {
+    final transcript = state.transcript;
+    if (transcript == null ||
+        segmentIndex < 0 ||
+        segmentIndex >= transcript.segments.length) return;
+    final segments = [...transcript.segments];
+    segments[segmentIndex] = segments[segmentIndex].copyWith(
+      positionX: x.clamp(0.05, 0.95).toDouble(),
+      positionY: y.clamp(0.05, 0.95).toDouble(),
+      scale: scale.clamp(0.5, 2).toDouble(),
+      rotationDegrees: rotationDegrees.clamp(-30, 30).toDouble(),
+    );
+    _recordEdit();
+    _editRevision++;
+    state = state.copyWith(
+      transcript: transcript.copyWith(segments: segments),
+      hasUnsavedChanges: true,
+      hasUnrenderedChanges: true,
+    );
+  }
+
+  void updateSegmentStyle(
+    int segmentIndex, {
+    String? stylePreset,
+    String? fontFamily,
+    bool clearFontFamily = false,
+    int? fontSize,
+    bool? motionEnabled,
+  }) {
+    final transcript = state.transcript;
+    if (transcript == null ||
+        segmentIndex < 0 ||
+        segmentIndex >= transcript.segments.length) return;
+    final segments = [...transcript.segments];
+    segments[segmentIndex] = segments[segmentIndex].copyWith(
+      stylePreset: stylePreset,
+      fontFamily: fontFamily,
+      clearFontFamily: clearFontFamily,
+      fontSize: fontSize,
+      motionEnabled: motionEnabled,
+    );
+    _recordEdit();
+    _editRevision++;
+    state = state.copyWith(
+      transcript: transcript.copyWith(segments: segments),
+      hasUnsavedChanges: true,
+      hasUnrenderedChanges: true,
+    );
+  }
+
   void setVideoFormat(String format) {
     if (!kVideoFormatLabels.containsKey(format) || format == state.videoFormat)
       return;
@@ -422,18 +478,62 @@ class CaptionEditorNotifier extends StateNotifier<CaptionEditorState> {
     );
   }
 
+  void selectCaptionTrack(String track, {String? language}) {
+    final transcript = state.transcript;
+    if (transcript == null) return;
+    final selected = track == 'translation'
+        ? transcript.translationTracks.cast<CaptionTrack?>().firstWhere(
+            (item) => item?.language.toLowerCase() ==
+                (language ?? transcript.activeTranslationLanguage ??
+                        transcript.language)
+                    .toLowerCase(),
+            orElse: () => null,
+          )
+        : transcript.sourceTrack;
+    if (selected == null) return;
+    if (track == transcript.activeTrack &&
+        (track != 'translation' ||
+            selected.language.toLowerCase() == transcript.language.toLowerCase())) {
+      return;
+    }
+    _recordEdit();
+    _editRevision++;
+    state = state.copyWith(
+      transcript: transcript.copyWith(
+        language: selected.language,
+        segments: selected.segments,
+        activeTrack: track,
+        activeTranslationLanguage:
+            track == 'translation' ? selected.language : null,
+      ),
+      hasUnsavedChanges: true,
+      hasUnrenderedChanges: true,
+    );
+  }
+
   Future<bool> translateTo(String targetLanguage) async {
     final transcript = state.transcript;
     final target = targetLanguage.trim();
     if (transcript == null || target.length < 2 || state.isTranslating)
       return false;
-    if (target.toLowerCase() == transcript.language.toLowerCase()) return true;
+    final source = transcript.sourceTrack ??
+        CaptionTrack(language: transcript.language, segments: transcript.segments);
+    if (target.toLowerCase() == source.language.toLowerCase()) {
+      state = state.copyWith(
+        errorMessage:
+            'Choose a translation language different from ${source.language}.',
+      );
+      return false;
+    }
     final revision = _editRevision;
     state = state.copyWith(isTranslating: true, clearError: true);
     try {
       final result = await _ref.read(apiClientProvider).post(
         '/api/projects/$projectId/captions/translate',
-        data: {'caption_data': transcript.toJson(), 'target_language': target},
+        data: {
+          'caption_data': source.toJson(),
+          'target_language': target,
+        },
       );
       if (revision != _editRevision) {
         state = state.copyWith(
@@ -445,10 +545,26 @@ class CaptionEditorNotifier extends StateNotifier<CaptionEditorState> {
       }
       final translated = CaptionTranscript.fromJson(
           result['caption_data'] as Map<String, dynamic>);
+      final translationTrack = CaptionTrack(
+        language: translated.language,
+        segments: translated.segments,
+      );
       _recordEdit();
       _editRevision++;
       state = state.copyWith(
-        transcript: translated,
+        transcript: CaptionTranscript(
+          language: translationTrack.language,
+          segments: translationTrack.segments,
+          sourceTrack: source,
+          translationTracks: [
+            ...transcript.translationTracks.where((track) =>
+                track.language.toLowerCase() !=
+                translationTrack.language.toLowerCase()),
+            translationTrack,
+          ],
+          activeTrack: 'translation',
+          activeTranslationLanguage: translationTrack.language,
+        ),
         isTranslating: false,
         hasUnsavedChanges: true,
         hasUnrenderedChanges: true,
