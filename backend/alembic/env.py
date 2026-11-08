@@ -23,7 +23,10 @@ target_metadata = Base.metadata
 
 settings = get_settings()
 sync_db_url = settings.database_url.replace("+asyncpg", "+psycopg2")
-config.set_main_option("sqlalchemy.url", sync_db_url)
+# Alembic's ConfigParser treats percent signs as interpolation markers.
+# Passwords in DATABASE_URL are URL-encoded, so escape percent signs here;
+# ConfigParser will restore them when engine_from_config reads the option.
+config.set_main_option("sqlalchemy.url", sync_db_url.replace("%", "%%"))
 
 
 def run_migrations_offline() -> None:
