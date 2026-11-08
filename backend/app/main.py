@@ -1,8 +1,9 @@
 import logging
+from pathlib import Path
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 
@@ -88,3 +89,38 @@ async def public_config() -> dict:
         "allowed_mime_types": settings.allowed_mime_list,
         "chunk_upload_default_chunk_size_bytes": 5 * 1024 * 1024,
     }
+
+
+_web_app_dir = Path("/opt/caption-app").resolve()
+
+
+@app.get("/", include_in_schema=False)
+async def serve_web_app() -> FileResponse:
+    index = _web_app_dir / "index.html"
+    if not index.is_file():
+        raise HTTPException(status_code=404, detail="Web app is not installed")
+    return FileResponse(index)
+
+
+@app.get("/{path:path}", include_in_schema=False)
+async def serve_web_app_path(path: str) -> FileResponse:
+    # Unknown API paths should remain API 404s instead of returning the SPA.
+    if path == "api" or path.startswith("api/"):
+        raise HTTPException(status_code=404, detail="Not Found")
+
+    index = _web_app_dir / "index.html"
+    if not index.is_file():
+        raise HTTPException(status_code=404, detail="Not Found")
+
+    requested = (_web_app_dir / path).resolve()
+    try:
+        requested.relative_to(_web_app_dir)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Not Found") from None
+
+    # Serve Flutter's generated JS, fonts, and other static assets directly.
+    if requested.is_file():
+        return FileResponse(requested)
+
+    # Flutter's go_router owns app paths such as /login and /dashboard.
+    return FileResponse(index)

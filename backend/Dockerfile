@@ -4,6 +4,7 @@ COPY frontend/pubspec.yaml frontend/pubspec.lock ./
 RUN flutter pub get
 COPY frontend/ ./
 RUN flutter build web --release --target lib/render_main.dart --output build/renderer --no-web-resources-cdn --pwa-strategy=none
+RUN flutter build web --release --target lib/main.dart --output build/app --no-web-resources-cdn --pwa-strategy=none
 
 FROM python:3.12-slim AS base
 
@@ -35,6 +36,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY backend/ .
 COPY --from=renderer /renderer-src/build/renderer /opt/caption-renderer
+COPY --from=renderer /renderer-src/build/app /opt/caption-app
 RUN mkdir -p /tmp/caption_app/uploads /tmp/caption_app/processing /tmp/caption_app/outputs
 
 EXPOSE 8000

@@ -1,4 +1,5 @@
 import 'package:dio/dio.dart';
+import 'package:flutter/foundation.dart';
 
 import 'api_exception.dart';
 import 'storage/token_storage.dart';
@@ -7,10 +8,13 @@ import 'storage/token_storage.dart';
 ///   flutter run --dart-define=API_BASE_URL=http://localhost:8000
 /// Never hardcoded to a production value and never reads GEMINI_API_KEY or
 /// any backend secret -- those live only on the server (section 20/53).
-const String kApiBaseUrl = String.fromEnvironment(
-  'API_BASE_URL',
-  defaultValue: 'http://localhost:8000',
-);
+const String _apiBaseUrlOverride = String.fromEnvironment('API_BASE_URL');
+
+String get kApiBaseUrl => _apiBaseUrlOverride.isNotEmpty
+    ? _apiBaseUrlOverride
+    : kIsWeb
+        ? Uri.base.origin
+        : 'http://localhost:8000';
 
 /// Thin wrapper around Dio: attaches the JWT to every request, normalizes
 /// every failure into an ApiException with a user-safe message, and calls
