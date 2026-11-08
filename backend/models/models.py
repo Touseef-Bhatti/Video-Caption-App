@@ -83,6 +83,7 @@ class ProcessingJob(Base):
     celery_task_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     render_snapshot: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    render_diagnostics: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     caption_options: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow)

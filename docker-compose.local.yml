@@ -10,3 +10,9 @@ services:
   backend:
     ports: !override
       - "9001:8000"
+    volumes:
+      - ./backend:/app
+
+  worker:
+    volumes:
+      - ./backend:/app

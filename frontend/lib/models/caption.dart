@@ -21,14 +21,12 @@ class CaptionWord {
       required this.start,
       required this.end,
       required this.style,
-      this.emoji,
       this.weight = 50});
 
   final String text;
   final double start;
   final double end;
   final WordStyle style;
-  final String? emoji;
   final int weight; // 20-100 context importance assigned by Gemini
 
   /// Manual per-word style editing (spec: "user can also manually edit
@@ -48,15 +46,12 @@ class CaptionWord {
           double? start,
           double? end,
           WordStyle? style,
-          String? emoji,
-          int? weight,
-          bool clearEmoji = false}) =>
+          int? weight}) =>
       CaptionWord(
         text: text ?? this.text,
         start: start ?? this.start,
         end: end ?? this.end,
         style: style ?? this.style,
-        emoji: clearEmoji ? null : (emoji ?? this.emoji),
         weight: weight ?? this.weight,
       );
 
@@ -65,7 +60,6 @@ class CaptionWord {
         start: (json['start'] as num).toDouble(),
         end: (json['end'] as num).toDouble(),
         style: wordStyleFromString(json['style'] as String? ?? 'normal'),
-        emoji: json['emoji'] as String?,
         weight: ((json['weight'] as num?)?.toInt() ?? 50).clamp(20, 100),
       );
 
@@ -74,14 +68,13 @@ class CaptionWord {
         'start': start,
         'end': end,
         'style': wordStyleToString(style),
-        if (emoji != null) 'emoji': emoji,
         'weight': weight,
       };
 }
 
-/// Splits a caption segment into short, weight-aware display lines. The same
-/// grouping is used by the editor's caption list and the shared preview/export
-/// renderer so both show the same words together.
+/// Splits a caption segment into short display lines. Word weights determine
+/// how many lines to use; each line contains at most four words and lines are
+/// balanced to three or four words where possible.
 List<List<int>> captionWordGroups(List<CaptionWord> words) {
   if (words.isEmpty) return const [];
 
@@ -105,13 +98,36 @@ List<List<int>> captionWordGroups(List<CaptionWord> words) {
   }
   if (group.isNotEmpty) groups.add(group);
 
-  // Avoid a one or two word tail when the previous line has room.
-  if (groups.length > 1 && groups.last.length < minWordsPerLine) {
-    final previous = groups[groups.length - 2];
-    while (groups.last.length < minWordsPerLine &&
-        previous.length > minWordsPerLine) {
-      groups.last.insert(0, previous.removeLast());
-    }
+  final minimumGroups = (words.length + maxWordsPerLine - 1) ~/ maxWordsPerLine;
+  final maximumGroups =
+      words.length < 6 ? minimumGroups : words.length ~/ minWordsPerLine;
+  final lineCount = groups.length.clamp(minimumGroups, maximumGroups).toInt();
+  final wordsPerLine = words.length ~/ lineCount;
+  final extraWords = words.length % lineCount;
+  final balancedGroups = <List<int>>[];
+  var nextWord = 0;
+  for (var i = 0; i < lineCount; i++) {
+    final count = wordsPerLine + (i < extraWords ? 1 : 0);
+    balancedGroups.add(List<int>.generate(count, (_) => nextWord++));
+  }
+  return balancedGroups;
+}
+
+/// Word grouping for older captions that have text but no word timings.
+/// Groups are balanced to three or four words where possible.
+List<String> captionTextGroups(String text) {
+  final tokens = text.trim().split(RegExp(r'\s+'))
+    ..removeWhere((token) => token.isEmpty);
+  if (tokens.isEmpty) return const [];
+  final lineCount = (tokens.length + 3) ~/ 4;
+  final wordsPerLine = tokens.length ~/ lineCount;
+  final extraWords = tokens.length % lineCount;
+  final groups = <String>[];
+  var start = 0;
+  for (var i = 0; i < lineCount; i++) {
+    final count = wordsPerLine + (i < extraWords ? 1 : 0);
+    groups.add(tokens.skip(start).take(count).join(' '));
+    start += count;
   }
   return groups;
 }
@@ -193,7 +209,7 @@ class CaptionSegment {
         scale: (json['scale'] as num?)?.toDouble(),
         rotationDegrees: (json['rotation_degrees'] as num?)?.toDouble(),
         stylePreset: json['style_preset'] as String?,
-        fontFamily: json['font_family'] as String?,
+        fontFamily: normalizedCaptionFont(json['font_family'] as String?),
         fontSize: (json['font_size'] as num?)?.toInt(),
         motionEnabled: json['motion_enabled'] as bool?,
         weight: (json['weight'] as num?)?.toDouble() ?? 0.5,
@@ -229,6 +245,7 @@ class CaptionTranscript {
     CaptionTrack? translationTrack,
     this.activeTrack = 'source',
     this.activeTranslationLanguage,
+    this.captionScript = 'native',
   }) : translationTracks = _mergeTranslationTracks(
           translationTracks,
           translationTrack,
@@ -240,6 +257,7 @@ class CaptionTranscript {
   final List<CaptionTrack> translationTracks;
   final String activeTrack;
   final String? activeTranslationLanguage;
+  final String captionScript;
 
   CaptionTrack? get activeTranslationTrack {
     final selectedLanguage = activeTranslationLanguage ??
@@ -265,6 +283,7 @@ class CaptionTranscript {
     CaptionTrack? translationTrack,
     String? activeTrack,
     String? activeTranslationLanguage,
+    String? captionScript,
   }) {
     final nextSegments = segments ?? this.segments;
     final nextLanguage = language ?? this.language;
@@ -272,13 +291,15 @@ class CaptionTranscript {
     var nextSource = sourceTrack ?? this.sourceTrack;
     var nextTranslations = translationTracks ?? this.translationTracks;
     if (translationTrack != null) {
-      nextTranslations = _mergeTranslationTracks(nextTranslations, translationTrack);
+      nextTranslations =
+          _mergeTranslationTracks(nextTranslations, translationTrack);
     }
     final nextTranslationLanguage = activeTranslationLanguage ??
         this.activeTranslationLanguage ??
         (nextActiveTrack == 'translation' ? nextLanguage : null);
     if (segments != null) {
-      final active = CaptionTrack(language: nextLanguage, segments: nextSegments);
+      final active =
+          CaptionTrack(language: nextLanguage, segments: nextSegments);
       if (nextActiveTrack == 'translation') {
         nextTranslations = _mergeTranslationTracks(nextTranslations, active);
       } else {
@@ -292,6 +313,7 @@ class CaptionTranscript {
       translationTracks: nextTranslations,
       activeTrack: nextActiveTrack,
       activeTranslationLanguage: nextTranslationLanguage,
+      captionScript: captionScript ?? this.captionScript,
     );
   }
 
@@ -302,44 +324,45 @@ class CaptionTranscript {
         .map(CaptionTrack.fromJson)
         .toList();
     final legacyTrack = json['translation_track'] is Map<String, dynamic>
-        ? CaptionTrack.fromJson(json['translation_track'] as Map<String, dynamic>)
+        ? CaptionTrack.fromJson(
+            json['translation_track'] as Map<String, dynamic>)
         : null;
     return CaptionTranscript(
-        language: json['language'] as String,
-        segments: (json['segments'] as List<dynamic>? ?? [])
-            .map((s) => CaptionSegment.fromJson(s as Map<String, dynamic>))
-            .toList(),
-        sourceTrack: json['source_track'] is Map<String, dynamic>
-            ? CaptionTrack.fromJson(json['source_track'] as Map<String, dynamic>)
-            : (activeTrack == 'translation'
-                ? null
-                : CaptionTrack.fromActiveJson(json)),
-        translationTracks: savedTracks,
-        translationTrack: legacyTrack,
-        activeTrack: activeTrack,
-        activeTranslationLanguage:
-            json['active_translation_language'] as String? ??
-                (activeTrack == 'translation'
-                    ? json['language'] as String?
-                    : null),
-      );
+      language: json['language'] as String,
+      segments: (json['segments'] as List<dynamic>? ?? [])
+          .map((s) => CaptionSegment.fromJson(s as Map<String, dynamic>))
+          .toList(),
+      sourceTrack: json['source_track'] is Map<String, dynamic>
+          ? CaptionTrack.fromJson(json['source_track'] as Map<String, dynamic>)
+          : (activeTrack == 'translation'
+              ? null
+              : CaptionTrack.fromActiveJson(json)),
+      translationTracks: savedTracks,
+      translationTrack: legacyTrack,
+      activeTrack: activeTrack,
+      activeTranslationLanguage: json['active_translation_language']
+              as String? ??
+          (activeTrack == 'translation' ? json['language'] as String? : null),
+      captionScript: json['caption_script'] as String? ?? 'native',
+    );
   }
 
   Map<String, dynamic> toJson() {
     final activeTranslation = activeTranslationTrack;
     return {
-        'language': language,
-        'segments': segments.map((s) => s.toJson()).toList(),
-        if (sourceTrack != null) 'source_track': sourceTrack!.toJson(),
-        if (translationTracks.isNotEmpty)
-          'translation_tracks':
-              translationTracks.map((track) => track.toJson()).toList(),
-        if (activeTranslation != null)
-          'translation_track': activeTranslation.toJson(),
-        'active_track': activeTrack,
-        if (activeTranslation != null)
-          'active_translation_language': activeTranslation.language,
-      };
+      'language': language,
+      'segments': segments.map((s) => s.toJson()).toList(),
+      if (sourceTrack != null) 'source_track': sourceTrack!.toJson(),
+      if (translationTracks.isNotEmpty)
+        'translation_tracks':
+            translationTracks.map((track) => track.toJson()).toList(),
+      if (activeTranslation != null)
+        'translation_track': activeTranslation.toJson(),
+      'active_track': activeTrack,
+      'caption_script': captionScript,
+      if (activeTranslation != null)
+        'active_translation_language': activeTranslation.language,
+    };
   }
 
   static List<CaptionTrack> _mergeTranslationTracks(
@@ -365,7 +388,8 @@ class CaptionTrack {
   final String language;
   final List<CaptionSegment> segments;
 
-  factory CaptionTrack.fromActiveJson(Map<String, dynamic> json) => CaptionTrack(
+  factory CaptionTrack.fromActiveJson(Map<String, dynamic> json) =>
+      CaptionTrack(
         language: json['language'] as String,
         segments: (json['segments'] as List<dynamic>? ?? [])
             .map((s) => CaptionSegment.fromJson(s as Map<String, dynamic>))
@@ -380,6 +404,25 @@ class CaptionTrack {
         'segments': segments.map((s) => s.toJson()).toList(),
       };
 }
+
+String detectedCaptionScript(CaptionTrack track, {String fallback = 'native'}) {
+  if (track.language.toLowerCase().trim() == 'urdu') {
+    final text = track.segments.map((segment) => segment.text).join(' ');
+    if (RegExp(r'[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF]').hasMatch(text)) {
+      return 'native';
+    }
+    if (RegExp(r'[A-Za-z]').hasMatch(text)) return 'roman';
+  }
+  return fallback;
+}
+
+String? normalizedCaptionFont(String? family) => switch (family) {
+      null => null,
+      'Arial' => 'Roboto',
+      'Georgia' || 'Times New Roman' => 'Lato',
+      'Courier New' => 'Roboto',
+      _ => family,
+    };
 
 /// Mirrors schemas.StyleOverrides. Color values stay as #RRGGBB on the wire
 /// and are converted to Flutter [Color] by the shared preview/export scene.
@@ -400,7 +443,6 @@ class StyleOverrides {
     this.positionY,
     this.scale = 1,
     this.rotationDegrees = 0,
-    this.emojisEnabled = true,
     this.motionEnabled = true,
   });
 
@@ -419,7 +461,6 @@ class StyleOverrides {
   final double? positionY; // normalized 0.0-1.0 caption center
   final double scale;
   final double rotationDegrees;
-  final bool emojisEnabled;
   final bool motionEnabled;
 
   StyleOverrides copyWith({
@@ -439,7 +480,6 @@ class StyleOverrides {
     double? positionY,
     double? scale,
     double? rotationDegrees,
-    bool? emojisEnabled,
     bool? motionEnabled,
   }) =>
       StyleOverrides(
@@ -458,7 +498,6 @@ class StyleOverrides {
         positionY: positionY ?? this.positionY,
         scale: scale ?? this.scale,
         rotationDegrees: rotationDegrees ?? this.rotationDegrees,
-        emojisEnabled: emojisEnabled ?? this.emojisEnabled,
         motionEnabled: motionEnabled ?? this.motionEnabled,
       );
 
@@ -471,7 +510,7 @@ class StyleOverrides {
       backgroundColor: json['background_color'] as String?,
       backgroundOpacity: (json['background_opacity'] as num?)?.toDouble(),
       fontSize: (json['font_size'] as num?)?.toInt(),
-      fontFamily: json['font_family'] as String?,
+      fontFamily: normalizedCaptionFont(json['font_family'] as String?),
       letterSpacing: (json['letter_spacing'] as num?)?.toDouble(),
       italic: json['italic'] as bool?,
       bold: json['bold'] as bool?,
@@ -480,7 +519,6 @@ class StyleOverrides {
       positionY: (json['position_y'] as num?)?.toDouble(),
       scale: (json['scale'] as num?)?.toDouble() ?? 1,
       rotationDegrees: (json['rotation_degrees'] as num?)?.toDouble() ?? 0,
-      emojisEnabled: json['emojis_enabled'] as bool? ?? true,
       motionEnabled: json['motion_enabled'] as bool? ?? true,
     );
   }
@@ -501,7 +539,6 @@ class StyleOverrides {
         if (positionY != null) 'position_y': positionY,
         if (scale != 1) 'scale': scale,
         if (rotationDegrees != 0) 'rotation_degrees': rotationDegrees,
-        'emojis_enabled': emojisEnabled,
         'motion_enabled': motionEnabled,
       };
 }
@@ -527,7 +564,6 @@ class CaptionPresetInfo {
     required this.backgroundPreview,
     required this.bold,
     required this.motion,
-    this.effect = '',
   });
 
   final String id;
@@ -539,7 +575,6 @@ class CaptionPresetInfo {
   final Color backgroundPreview;
   final bool bold;
   final String motion;
-  final String effect;
 }
 
 const List<CaptionPresetInfo> kCaptionPresets = [
@@ -553,7 +588,6 @@ const List<CaptionPresetInfo> kCaptionPresets = [
     backgroundPreview: Color(0xB8000000),
     bold: true,
     motion: 'pop',
-    effect: '✦',
   ),
   CaptionPresetInfo(
     id: 'neon',
@@ -565,7 +599,6 @@ const List<CaptionPresetInfo> kCaptionPresets = [
     backgroundPreview: Color(0xD91A0C2E),
     bold: true,
     motion: 'pulse',
-    effect: '✧',
   ),
   CaptionPresetInfo(
     id: 'headline',
@@ -577,7 +610,6 @@ const List<CaptionPresetInfo> kCaptionPresets = [
     backgroundPreview: Color(0xEFFF6A00),
     bold: true,
     motion: 'slide',
-    effect: '◆',
   ),
   CaptionPresetInfo(
     id: 'social',
@@ -589,7 +621,6 @@ const List<CaptionPresetInfo> kCaptionPresets = [
     backgroundPreview: Color(0xB8000000),
     bold: true,
     motion: 'bounce',
-    effect: '🔥',
   ),
   CaptionPresetInfo(
     id: 'karaoke',
@@ -601,7 +632,6 @@ const List<CaptionPresetInfo> kCaptionPresets = [
     backgroundPreview: Color(0xC7000000),
     bold: true,
     motion: 'karaoke',
-    effect: '♪',
   ),
   CaptionPresetInfo(
     id: 'comic',
@@ -613,7 +643,6 @@ const List<CaptionPresetInfo> kCaptionPresets = [
     backgroundPreview: Color(0xD91B1B22),
     bold: true,
     motion: 'impact',
-    effect: '💥',
   ),
   CaptionPresetInfo(
     id: 'creator',
@@ -625,7 +654,6 @@ const List<CaptionPresetInfo> kCaptionPresets = [
     backgroundPreview: Color(0xD91E1E24),
     bold: true,
     motion: 'zoom',
-    effect: '●',
   ),
   CaptionPresetInfo(
     id: 'news',
@@ -637,7 +665,6 @@ const List<CaptionPresetInfo> kCaptionPresets = [
     backgroundPreview: Color(0xF2E85D04),
     bold: true,
     motion: 'slide',
-    effect: '⚡',
   ),
   CaptionPresetInfo(
     id: 'minimal',
@@ -660,7 +687,17 @@ const List<CaptionPresetInfo> kCaptionPresets = [
     backgroundPreview: Color(0x99000000),
     bold: false,
     motion: 'cinematic',
-    effect: '✦',
+  ),
+  CaptionPresetInfo(
+    id: 'liquid_glass',
+    label: 'Liquid Glass',
+    description: 'Frosted translucent glass with soft iridescent highlights.',
+    primaryPreview: Color(0xFFF9FCFF),
+    highlightPreview: Color(0xFFBCE7FF),
+    emphasisPreview: Color(0xFFD8C7FF),
+    backgroundPreview: Color(0x40FFFFFF),
+    bold: true,
+    motion: 'fade',
   ),
   CaptionPresetInfo(
       id: 'podcast_interview',

@@ -27,6 +27,7 @@ class Settings(BaseSettings):
     gemini_api_key: str
     gemini_model: str = "gemini-2.0-flash"
     gemini_max_retries: int = 3
+    gemini_max_concurrency: int = 2
     gemini_chunk_seconds: int = 600
     gemini_chunk_overlap_seconds: int = 5
 

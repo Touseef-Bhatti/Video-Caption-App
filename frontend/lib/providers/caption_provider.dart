@@ -23,6 +23,7 @@ class CaptionEditorState {
     this.isSaving = false,
     this.isRendering = false,
     this.isTranslating = false,
+    this.isChangingScript = false,
     this.hasUnsavedChanges = false,
     this.hasUnrenderedChanges = false,
     this.canUndo = false,
@@ -39,6 +40,7 @@ class CaptionEditorState {
   final bool isSaving;
   final bool isRendering;
   final bool isTranslating;
+  final bool isChangingScript;
   final bool hasUnsavedChanges;
   final bool hasUnrenderedChanges;
   final bool canUndo;
@@ -55,6 +57,7 @@ class CaptionEditorState {
     bool? isSaving,
     bool? isRendering,
     bool? isTranslating,
+    bool? isChangingScript,
     bool? hasUnsavedChanges,
     bool? hasUnrenderedChanges,
     bool? canUndo,
@@ -72,6 +75,7 @@ class CaptionEditorState {
         isSaving: isSaving ?? this.isSaving,
         isRendering: isRendering ?? this.isRendering,
         isTranslating: isTranslating ?? this.isTranslating,
+        isChangingScript: isChangingScript ?? this.isChangingScript,
         hasUnsavedChanges: hasUnsavedChanges ?? this.hasUnsavedChanges,
         hasUnrenderedChanges: hasUnrenderedChanges ?? this.hasUnrenderedChanges,
         canUndo: canUndo ?? this.canUndo,
@@ -92,6 +96,7 @@ class CaptionEditorNotifier extends StateNotifier<CaptionEditorState> {
   int _editRevision = 0;
   int? _renderRevision;
   String? _savedFingerprint;
+  Future<bool>? _saveFuture;
   final List<_CaptionEditSnapshot> _undoStack = [];
   final List<_CaptionEditSnapshot> _redoStack = [];
 
@@ -185,26 +190,6 @@ class CaptionEditorNotifier extends StateNotifier<CaptionEditorState> {
     );
   }
 
-  void setWordEmoji(int segmentIndex, int wordIndex, String? emoji) {
-    _editRevision++;
-    final transcript = state.transcript;
-    if (transcript == null) return;
-    _recordEdit();
-    final segments = [...transcript.segments];
-    final segment = segments[segmentIndex];
-    final words = [...segment.words];
-    words[wordIndex] = words[wordIndex].copyWith(
-      emoji: emoji,
-      clearEmoji: emoji == null,
-    );
-    segments[segmentIndex] = segment.copyWith(words: words);
-    state = state.copyWith(
-      transcript: transcript.copyWith(segments: segments),
-      hasUnsavedChanges: true,
-      hasUnrenderedChanges: true,
-    );
-  }
-
   /// Edits one word's text, keeping its timing and style. The renderer draws
   /// captions word by word, so this (not the segment text) is what changes
   /// the exported video; the segment's own text is rebuilt to match.
@@ -230,10 +215,46 @@ class CaptionEditorNotifier extends StateNotifier<CaptionEditorState> {
   void updateSegmentText(int segmentIndex, String newText) {
     _editRevision++;
     final transcript = state.transcript;
-    if (transcript == null) return;
+    if (transcript == null ||
+        segmentIndex < 0 ||
+        segmentIndex >= transcript.segments.length) return;
     _recordEdit();
     final segments = [...transcript.segments];
-    segments[segmentIndex] = segments[segmentIndex].copyWith(text: newText);
+    final segment = segments[segmentIndex];
+    final tokens = newText.trim().isEmpty
+        ? <String>[]
+        : newText.trim().split(RegExp(r'\s+'));
+    var words = <CaptionWord>[];
+    if (segment.words.isNotEmpty && tokens.isNotEmpty) {
+      final totalCharacters =
+          tokens.fold<int>(0, (total, token) => total + token.runes.length);
+      var elapsedCharacters = 0;
+      for (var i = 0; i < tokens.length; i++) {
+        final oldIndex = tokens.length == 1 || segment.words.length == 1
+            ? 0
+            : (i * (segment.words.length - 1) / (tokens.length - 1)).round();
+        final start = segment.start +
+            (segment.end - segment.start) * elapsedCharacters / totalCharacters;
+        elapsedCharacters += tokens[i].runes.length;
+        final end = i == tokens.length - 1
+            ? segment.end
+            : segment.start +
+                (segment.end - segment.start) *
+                    elapsedCharacters /
+                    totalCharacters;
+        words.add(CaptionWord(
+          text: tokens[i],
+          start: start,
+          end: end,
+          style: segment.words[oldIndex].style,
+          weight: segment.words[oldIndex].weight,
+        ));
+      }
+    }
+    segments[segmentIndex] = segment.copyWith(
+      text: newText,
+      words: words,
+    );
     state = state.copyWith(
       transcript: transcript.copyWith(segments: segments),
       hasUnsavedChanges: true,
@@ -410,6 +431,45 @@ class CaptionEditorNotifier extends StateNotifier<CaptionEditorState> {
     );
   }
 
+  /// Clears global and per-caption styling so every caption uses the selected
+  /// preset's defaults again.
+  void resetCustomizations() {
+    final transcript = state.transcript;
+    final segments = transcript?.segments
+        .map((segment) => CaptionSegment(
+              start: segment.start,
+              end: segment.end,
+              text: segment.text,
+              weight: segment.weight,
+              words: segment.words,
+              speaker: segment.speaker,
+            ))
+        .toList();
+    final hasSegmentCustomizations = transcript?.segments.any((segment) =>
+            segment.positionX != null ||
+            segment.positionY != null ||
+            segment.scale != null ||
+            segment.rotationDegrees != null ||
+            segment.stylePreset != null ||
+            segment.fontFamily != null ||
+            segment.fontSize != null ||
+            segment.motionEnabled != null) ??
+        false;
+    final hasGlobalCustomizations = state.styleOverrides.toJson().toString() !=
+        const StyleOverrides().toJson().toString();
+    if (!hasSegmentCustomizations && !hasGlobalCustomizations) return;
+
+    _recordEdit();
+    _editRevision++;
+    state = state.copyWith(
+      styleOverrides: const StyleOverrides(),
+      transcript:
+          transcript == null ? null : transcript.copyWith(segments: segments),
+      hasUnsavedChanges: true,
+      hasUnrenderedChanges: true,
+    );
+  }
+
   void updateSegmentTransform(
     int segmentIndex, {
     required double x,
@@ -466,6 +526,37 @@ class CaptionEditorNotifier extends StateNotifier<CaptionEditorState> {
     );
   }
 
+  void applySegmentStyleToAll(int segmentIndex) {
+    final transcript = state.transcript;
+    if (transcript == null ||
+        segmentIndex < 0 ||
+        segmentIndex >= transcript.segments.length) return;
+    final selected = transcript.segments[segmentIndex];
+    final overrides = state.styleOverrides;
+    final segments = transcript.segments
+        .map((segment) => segment.copyWith(
+              stylePreset: selected.stylePreset ?? state.stylePreset,
+              fontFamily: selected.fontFamily ?? overrides.fontFamily,
+              clearFontFamily:
+                  selected.fontFamily == null && overrides.fontFamily == null,
+              fontSize: selected.fontSize ?? overrides.fontSize,
+              motionEnabled: selected.motionEnabled ?? overrides.motionEnabled,
+              positionX: selected.positionX ?? overrides.positionX,
+              positionY: selected.positionY ?? overrides.positionY,
+              scale: selected.scale ?? overrides.scale,
+              rotationDegrees:
+                  selected.rotationDegrees ?? overrides.rotationDegrees,
+            ))
+        .toList();
+    _recordEdit();
+    _editRevision++;
+    state = state.copyWith(
+      transcript: transcript.copyWith(segments: segments),
+      hasUnsavedChanges: true,
+      hasUnrenderedChanges: true,
+    );
+  }
+
   void setVideoFormat(String format) {
     if (!kVideoFormatLabels.containsKey(format) || format == state.videoFormat)
       return;
@@ -483,17 +574,20 @@ class CaptionEditorNotifier extends StateNotifier<CaptionEditorState> {
     if (transcript == null) return;
     final selected = track == 'translation'
         ? transcript.translationTracks.cast<CaptionTrack?>().firstWhere(
-            (item) => item?.language.toLowerCase() ==
-                (language ?? transcript.activeTranslationLanguage ??
-                        transcript.language)
-                    .toLowerCase(),
-            orElse: () => null,
-          )
+              (item) =>
+                  item?.language.toLowerCase() ==
+                  (language ??
+                          transcript.activeTranslationLanguage ??
+                          transcript.language)
+                      .toLowerCase(),
+              orElse: () => null,
+            )
         : transcript.sourceTrack;
     if (selected == null) return;
     if (track == transcript.activeTrack &&
         (track != 'translation' ||
-            selected.language.toLowerCase() == transcript.language.toLowerCase())) {
+            selected.language.toLowerCase() ==
+                transcript.language.toLowerCase())) {
       return;
     }
     _recordEdit();
@@ -511,20 +605,92 @@ class CaptionEditorNotifier extends StateNotifier<CaptionEditorState> {
     );
   }
 
-  Future<bool> translateTo(String targetLanguage) async {
+  Future<bool> setCaptionScript(String targetScript) async {
     final transcript = state.transcript;
-    final target = targetLanguage.trim();
-    if (transcript == null || target.length < 2 || state.isTranslating)
+    if (transcript == null ||
+        !{'roman', 'native'}.contains(targetScript) ||
+        state.isTranslating ||
+        state.isChangingScript) {
       return false;
+    }
     final source = transcript.sourceTrack ??
-        CaptionTrack(language: transcript.language, segments: transcript.segments);
-    if (target.toLowerCase() == source.language.toLowerCase()) {
+        (transcript.activeTrack == 'source'
+            ? CaptionTrack(
+                language: transcript.language, segments: transcript.segments)
+            : null);
+    if (source == null) {
       state = state.copyWith(
         errorMessage:
-            'Choose a translation language different from ${source.language}.',
+            'The original caption text is unavailable to change its script.',
       );
       return false;
     }
+    if (targetScript ==
+        detectedCaptionScript(source, fallback: transcript.captionScript)) {
+      return false;
+    }
+
+    final revision = _editRevision;
+    state = state.copyWith(isChangingScript: true, clearError: true);
+    try {
+      final result = await _ref.read(apiClientProvider).post(
+        '/api/projects/$projectId/captions/script',
+        data: {
+          'caption_data': source.toJson(),
+          'target_script': targetScript,
+        },
+      );
+      if (revision != _editRevision) {
+        state = state.copyWith(
+          isChangingScript: false,
+          errorMessage:
+              'Captions changed while the script was being updated. Please try again.',
+        );
+        return false;
+      }
+      final converted = CaptionTranscript.fromJson(
+          result['caption_data'] as Map<String, dynamic>);
+      final convertedSource = CaptionTrack(
+        language: source.language,
+        segments: converted.segments,
+      );
+      _recordEdit();
+      _editRevision++;
+      state = state.copyWith(
+        transcript: transcript.copyWith(
+          sourceTrack: convertedSource,
+          segments:
+              transcript.activeTrack == 'source' ? converted.segments : null,
+          captionScript: targetScript,
+        ),
+        isChangingScript: false,
+        hasUnsavedChanges: true,
+        hasUnrenderedChanges: true,
+      );
+      return true;
+    } on ApiException catch (e) {
+      state = state.copyWith(isChangingScript: false, errorMessage: e.message);
+      return false;
+    } catch (_) {
+      state = state.copyWith(
+        isChangingScript: false,
+        errorMessage:
+            'Could not change the caption text script. Please try again.',
+      );
+      return false;
+    }
+  }
+
+  Future<bool> translateTo(String targetLanguage) async {
+    final transcript = state.transcript;
+    final target = targetLanguage.trim();
+    if (transcript == null ||
+        target.length < 2 ||
+        state.isTranslating ||
+        state.isChangingScript) return false;
+    final source = transcript.sourceTrack ??
+        CaptionTrack(
+            language: transcript.language, segments: transcript.segments);
     final revision = _editRevision;
     state = state.copyWith(isTranslating: true, clearError: true);
     try {
@@ -564,6 +730,7 @@ class CaptionEditorNotifier extends StateNotifier<CaptionEditorState> {
           ],
           activeTrack: 'translation',
           activeTranslationLanguage: translationTrack.language,
+          captionScript: transcript.captionScript,
         ),
         isTranslating: false,
         hasUnsavedChanges: true,
@@ -583,7 +750,17 @@ class CaptionEditorNotifier extends StateNotifier<CaptionEditorState> {
     }
   }
 
-  Future<bool> save() async {
+  Future<bool> save() {
+    final inFlight = _saveFuture;
+    if (inFlight != null) return inFlight;
+    final future = _saveCaptionChanges();
+    _saveFuture = future;
+    return future.whenComplete(() {
+      if (identical(_saveFuture, future)) _saveFuture = null;
+    });
+  }
+
+  Future<bool> _saveCaptionChanges() async {
     final transcript = state.transcript;
     if (transcript == null) return false;
     final revision = _editRevision;
@@ -611,16 +788,19 @@ class CaptionEditorNotifier extends StateNotifier<CaptionEditorState> {
 
   /// Saves any pending edits, then re-renders the final video from the
   /// saved caption data -- never re-invokes Gemini (section 56), so this
-  /// is fast and free of extra AI cost. Returns the new job id so the
-  /// caller can navigate to the processing screen.
+  /// is fast and free of extra AI cost. Returns the active or new job id so
+  /// callers can resume waiting if a render is already running.
   Future<String?> saveAndRerender() async {
-    if (state.isRendering || state.isSaving) return null;
-    final revision = _editRevision;
-    if (state.hasUnsavedChanges) {
+    if (state.isRendering) return state.lastRenderJobId;
+    if (state.isSaving || state.hasUnsavedChanges) {
       final saved = await save();
       if (!saved) return null;
     }
-    if (revision != _editRevision) return null;
+    if (state.hasUnsavedChanges) {
+      final saved = await save();
+      if (!saved || state.hasUnsavedChanges) return null;
+    }
+    final revision = _editRevision;
     _renderRevision = revision;
     state = state.copyWith(isRendering: true, clearError: true);
     try {

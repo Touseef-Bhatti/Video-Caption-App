@@ -33,7 +33,6 @@ class GeminiWord(BaseModel):
     start: float
     end: float
     style: WordStyle = "normal"
-    emoji: str | None = Field(default=None, max_length=12)
     # Context importance used to decide which words share an on-screen line.
     weight: int = Field(default=50, ge=20, le=100)
 
@@ -64,7 +63,7 @@ class GeminiSegment(BaseModel):
     scale: float | None = Field(default=None, ge=0.5, le=2.0)
     rotation_degrees: float | None = Field(default=None, ge=-30, le=30)
     style_preset: str | None = Field(default=None, min_length=1, max_length=64)
-    font_family: Literal["auto", "Caption Sans", "Caption Arabic", "Caption Urdu"] | None = None
+    font_family: Literal["auto", "Caption Sans", "Caption Arabic", "Caption Urdu", "Roboto", "Open Sans", "Lato", "Montserrat", "Poppins", "Inter", "Arial", "Georgia", "Times New Roman", "Courier New"] | None = None
     font_size: int | None = Field(default=None, ge=16, le=120)
     motion_enabled: bool | None = None
 
@@ -117,7 +116,7 @@ class StyleOverrides(BaseModel):
     background_color: str | None = Field(default=None, pattern=r"^#[0-9A-Fa-f]{6}$")
     background_opacity: float | None = Field(default=None, ge=0.0, le=1.0)
     font_size: int | None = Field(default=None, ge=16, le=120)
-    font_family: Literal["Caption Sans", "Caption Arabic", "Caption Urdu"] | None = None
+    font_family: Literal["Caption Sans", "Caption Arabic", "Caption Urdu", "Roboto", "Open Sans", "Lato", "Montserrat", "Poppins", "Inter", "Arial", "Georgia", "Times New Roman", "Courier New"] | None = None
     letter_spacing: float | None = Field(default=None, ge=-1.0, le=4.0)
     italic: bool | None = None
     bold: bool | None = None
@@ -128,6 +127,7 @@ class StyleOverrides(BaseModel):
     position_y: float | None = Field(default=None, ge=0.05, le=0.95)
     scale: float | None = Field(default=None, ge=0.5, le=2.0)
     rotation_degrees: float | None = Field(default=None, ge=-30, le=30)
+    # Accepted for compatibility with saved projects; the editor no longer exposes this setting.
     emojis_enabled: bool | None = None
     motion_enabled: bool | None = None
 
@@ -149,3 +149,8 @@ class CaptionUpdateRequest(BaseModel):
 class CaptionTranslateRequest(BaseModel):
     caption_data: dict
     target_language: str = Field(min_length=2, max_length=100)
+
+
+class CaptionScriptRequest(BaseModel):
+    caption_data: dict
+    target_script: Literal["roman", "native"]

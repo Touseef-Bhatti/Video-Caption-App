@@ -1,16 +1,14 @@
 import 'dart:math' as math;
+import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 
 import '../models/caption.dart';
 
 const captionFramesPerSecond = 30;
-const captionRendererVersion = 'flutter-scene-v3';
+const captionRendererVersion = 'flutter-scene-v7';
 
-String captionPosition(String id) =>
-    {'classic', 'neon', 'social', 'comic'}.contains(presetInfoFor(id).id)
-        ? 'center'
-        : 'bottom';
+String captionPosition(String _) => 'bottom';
 
 String captionFontForLanguage(String language) {
   final normalized = language.toLowerCase().trim();
@@ -27,8 +25,8 @@ String captionFontForTranscript(CaptionTranscript transcript) {
 }
 
 String captionFontForText(String text, String language) {
-  final hasArabicScript = RegExp(r'[\u0600-\u06FF\u0750-\u077F]')
-      .hasMatch(text);
+  final hasArabicScript =
+      RegExp(r'[\u0600-\u06FF\u0750-\u077F]').hasMatch(text);
   if (!hasArabicScript) return 'Caption Sans';
   return captionFontForLanguage(language);
 }
@@ -53,7 +51,8 @@ bool captionTextIsRtl(String text, String language) {
 String captionFontLabel(String family) => switch (family) {
       'Caption Urdu' => 'Noto Nastaliq Urdu',
       'Caption Arabic' => 'Noto Naskh Arabic',
-      _ => 'Noto Sans',
+      'Caption Sans' => 'Noto Sans',
+      _ => family,
     };
 
 double captionPositionY(String position) => switch (position) {
@@ -79,7 +78,8 @@ class CaptionScene extends StatelessWidget {
   final String presetId;
   final StyleOverrides overrides;
   final double time;
-  final void Function(double x, double y, double scale, double rotationDegrees)? onTransformChanged;
+  final void Function(double x, double y, double scale, double rotationDegrees)?
+      onTransformChanged;
 
   @override
   Widget build(BuildContext context) {
@@ -97,14 +97,14 @@ class CaptionScene extends StatelessWidget {
     final activePresetId = seg.stylePreset ?? presetId;
     final preset = presetInfoFor(activePresetId);
     final x = (seg.positionX ?? overrides.positionX ?? 0.5).clamp(0.05, 0.95);
-    final y = (seg.positionY ?? overrides.positionY ??
-            captionPositionY(overrides.position ?? captionPosition(activePresetId)))
+    final y = (seg.positionY ??
+            overrides.positionY ??
+            captionPositionY(
+                overrides.position ?? captionPosition(activePresetId)))
         .clamp(0.05, 0.95);
     final lineScale = seg.scale ?? overrides.scale;
     final lineRotation = seg.rotationDegrees ?? overrides.rotationDegrees;
-    final words = seg.words.isEmpty
-        ? _wordsFromSegment(seg)
-        : seg.words;
+    final words = seg.words.isEmpty ? _wordsFromSegment(seg) : seg.words;
     final active = words.indexWhere((w) => t >= w.start && t < w.end);
     final wordRows = captionWordGroups(words);
     var visibleRowIndex = wordRows.lastIndexWhere(
@@ -124,22 +124,27 @@ class CaptionScene extends StatelessWidget {
 
     Color colorFor(WordStyle style, int wordIndex) {
       if (presetInfoFor(activePresetId).id == 'karaoke') {
-        if (wordIndex == active) return overrides.highlightColor != null
-            ? colorFromHex(overrides.highlightColor!) : preset.highlightPreview;
+        if (wordIndex == active)
+          return overrides.highlightColor != null
+              ? colorFromHex(overrides.highlightColor!)
+              : preset.highlightPreview;
         if (wordIndex < active) return preset.highlightPreview;
         return overrides.primaryColor != null
-            ? colorFromHex(overrides.primaryColor!) : preset.primaryPreview;
+            ? colorFromHex(overrides.primaryColor!)
+            : preset.primaryPreview;
       }
       final hex = switch (style) {
         WordStyle.normal => overrides.primaryColor,
         WordStyle.highlight => overrides.highlightColor,
         WordStyle.emphasis => overrides.emphasisColor,
       };
-      return hex != null ? colorFromHex(hex) : switch (style) {
-        WordStyle.normal => preset.primaryPreview,
-        WordStyle.highlight => preset.highlightPreview,
-        WordStyle.emphasis => preset.emphasisPreview,
-      };
+      return hex != null
+          ? colorFromHex(hex)
+          : switch (style) {
+              WordStyle.normal => preset.primaryPreview,
+              WordStyle.highlight => preset.highlightPreview,
+              WordStyle.emphasis => preset.emphasisPreview,
+            };
     }
 
     double phase(CaptionWord w) =>
@@ -151,11 +156,16 @@ class CaptionScene extends StatelessWidget {
         WordStyle.highlight => 0.27,
         WordStyle.normal => 0.08,
       };
-      return 1 + math.sin(phase(w) * math.pi) * (w.weight / 100) * strength *
-          (preset.motion == 'impact' ? 1.22 : 1);
+      return 1 +
+          math.sin(phase(w) * math.pi) *
+              (w.weight / 100) *
+              strength *
+              (preset.motion == 'impact' ? 1.22 : 1);
     }
+
     Offset offset(CaptionWord w, int i) {
-      if (!motionEnabled || preset.motion == 'none' || i != active) return Offset.zero;
+      if (!motionEnabled || preset.motion == 'none' || i != active)
+        return Offset.zero;
       final p = phase(w);
       final envelope = math.sin(p * math.pi);
       return switch (preset.motion) {
@@ -168,61 +178,121 @@ class CaptionScene extends StatelessWidget {
 
     return LayoutBuilder(builder: (context, frame) {
       final designWidth = frame.maxWidth / frame.maxHeight * 1080;
-      final basePanel = ConstrainedBox(
+      final isLiquidGlass = preset.id == 'liquid_glass';
+      final panelRadius = BorderRadius.circular(
+          (preset.id == 'headline' || preset.id == 'news' ? 4 : 10) * unit);
+      final basePanelContent = ConstrainedBox(
         constraints: BoxConstraints(maxWidth: designWidth * 0.88),
         child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 12 * unit, vertical: 7 * unit),
+          padding: const EdgeInsets.symmetric(
+              horizontal: 12 * unit, vertical: 7 * unit),
           decoration: BoxDecoration(
             color: overrides.backgroundColor != null
                 ? colorFromHex(overrides.backgroundColor!).withValues(
                     alpha: (overrides.backgroundOpacity ?? 0.75)
-                        .clamp(0.0, 1.0).toDouble())
-                : preset.backgroundPreview,
-            borderRadius: BorderRadius.circular(
-                (preset.id == 'headline' || preset.id == 'news' ? 4 : 6) * unit),
-            border: preset.id == 'headline' || preset.id == 'news'
-                ? Border(left: BorderSide(color: preset.highlightPreview, width: 5 * unit))
+                        .clamp(0.0, 1.0)
+                        .toDouble())
+                : isLiquidGlass
+                    ? null
+                    : preset.backgroundPreview,
+            gradient: isLiquidGlass && overrides.backgroundColor == null
+                ? const LinearGradient(
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
+                    colors: [
+                      Color(0x6BFFFFFF),
+                      Color(0x2EC7E7FF),
+                      Color(0x45E5D8FF),
+                    ],
+                    stops: [0, 0.54, 1],
+                  )
                 : null,
-            boxShadow: preset.id == 'neon'
-                ? [BoxShadow(color: preset.highlightPreview.withValues(alpha: 0.38), blurRadius: 12 * unit)]
-                : null,
+            borderRadius: panelRadius,
+            border: isLiquidGlass
+                ? Border.all(
+                    color: Colors.white.withValues(alpha: 0.78),
+                    width: 1.4 * unit,
+                  )
+                : preset.id == 'headline' || preset.id == 'news'
+                    ? Border(
+                        left: BorderSide(
+                            color: preset.highlightPreview, width: 5 * unit))
+                    : null,
+            boxShadow: isLiquidGlass
+                ? [
+                    BoxShadow(
+                      color: const Color(0x6687CFFF),
+                      blurRadius: 19 * unit,
+                      offset: Offset(0, 3 * unit),
+                    ),
+                    BoxShadow(
+                      color: Colors.white.withValues(alpha: 0.35),
+                      blurRadius: 6 * unit,
+                      offset: Offset(0, -1 * unit),
+                    ),
+                  ]
+                : preset.id == 'neon'
+                    ? [
+                        BoxShadow(
+                            color:
+                                preset.highlightPreview.withValues(alpha: 0.38),
+                            blurRadius: 12 * unit)
+                      ]
+                    : null,
           ),
           child: FittedBox(
             fit: BoxFit.scaleDown,
             child: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
-              for (final i in visibleWords) ...[
-                if (i != visibleWords.first) SizedBox(width: 4 * unit),
-                if (i == active && motionEnabled && preset.motion != 'none' && preset.effect.isNotEmpty &&
-                    words[i].weight >= 70 && words[i].style != WordStyle.normal)
-                  Transform.scale(
-                    scale: scale(words[i], i),
-                    child: Text(preset.effect,
-                        style: TextStyle(color: preset.emphasisPreview, fontSize: size)),
+                for (final i in visibleWords) ...[
+                  if (i != visibleWords.first) SizedBox(width: 4 * unit),
+                  Transform.translate(
+                    offset: offset(words[i], i),
+                    child: Transform.scale(
+                      scale: scale(words[i], i),
+                      child: Row(mainAxisSize: MainAxisSize.min, children: [
+                        Text(words[i].text,
+                            style: TextStyle(
+                                color: colorFor(words[i].style, i),
+                                fontSize: size,
+                                letterSpacing: overrides.letterSpacing ?? 0,
+                                shadows: isLiquidGlass
+                                    ? const [
+                                        Shadow(
+                                          color: Color(0x66000000),
+                                          blurRadius: 3,
+                                          offset: Offset(0, 1),
+                                        ),
+                                      ]
+                                    : null,
+                                fontStyle: (overrides.italic ?? true)
+                                    ? FontStyle.italic
+                                    : FontStyle.normal,
+                                fontWeight: (overrides.bold ?? preset.bold)
+                                    ? FontWeight.w800
+                                    : FontWeight.w500)),
+                      ]),
+                    ),
                   ),
-                Transform.translate(
-                  offset: offset(words[i], i),
-                  child: Transform.scale(
-                    scale: scale(words[i], i),
-                    child: Row(mainAxisSize: MainAxisSize.min, children: [
-                      Text(words[i].text,
-                          style: TextStyle(color: colorFor(words[i].style, i), fontSize: size,
-                              letterSpacing: overrides.letterSpacing ?? 0,
-                              fontStyle: (overrides.italic ?? false) ? FontStyle.italic : FontStyle.normal,
-                              fontWeight: (overrides.bold ?? preset.bold)
-                                  ? FontWeight.w800 : FontWeight.w500)),
-                      if (overrides.emojisEnabled && words[i].emoji != null)
-                        Text(' ${words[i].emoji}', style: TextStyle(fontSize: size)),
-                    ]),
-                  ),
-                ),
-              ],
+                ],
               ],
             ),
           ),
         ),
       );
+      final basePanel = isLiquidGlass
+          ? ClipRRect(
+              borderRadius: panelRadius,
+              child: BackdropFilter(
+                filter: ui.ImageFilter.blur(
+                  sigmaX: 13 * unit,
+                  sigmaY: 13 * unit,
+                ),
+                child: basePanelContent,
+              ),
+            )
+          : basePanelContent;
       final panel = preset.id == 'podcast_interview'
           ? Column(
               mainAxisSize: MainAxisSize.min,
@@ -231,15 +301,18 @@ class CaptionScene extends StatelessWidget {
                 if (seg.speaker?.trim().isNotEmpty == true)
                   Container(
                     margin: EdgeInsets.only(bottom: 3 * unit),
-                    padding: EdgeInsets.symmetric(horizontal: 8 * unit, vertical: 2 * unit),
+                    padding: EdgeInsets.symmetric(
+                        horizontal: 8 * unit, vertical: 2 * unit),
                     decoration: BoxDecoration(
                       color: preset.highlightPreview,
                       borderRadius: BorderRadius.circular(99),
                     ),
-                    child: Text(seg.speaker!, style: TextStyle(
-                      color: Colors.black87, fontSize: size * 0.62,
-                      fontWeight: FontWeight.w700,
-                    )),
+                    child: Text(seg.speaker!,
+                        style: TextStyle(
+                          color: Colors.black87,
+                          fontSize: size * 0.62,
+                          fontWeight: FontWeight.w700,
+                        )),
                   ),
                 basePanel,
               ],
@@ -255,11 +328,21 @@ class CaptionScene extends StatelessWidget {
             child: MediaQuery(
               data: const MediaQueryData(textScaler: TextScaler.noScaling),
               child: DefaultTextStyle(
-                style: TextStyle(fontFamily: font, fontSize: size, height: 1.25,
+                style: TextStyle(
+                    fontFamily: font,
+                    fontSize: size,
+                    height: 1.25,
                     letterSpacing: overrides.letterSpacing ?? 0,
-                    fontStyle: (overrides.italic ?? false) ? FontStyle.italic : FontStyle.normal,
-                    fontFamilyFallback: const ['Caption Sans', 'Caption Arabic',
-                      'Caption Urdu', 'Caption Symbols', 'Caption Emoji']),
+                    fontStyle: (overrides.italic ?? true)
+                        ? FontStyle.italic
+                        : FontStyle.normal,
+                    fontFamilyFallback: const [
+                      'Caption Sans',
+                      'Caption Arabic',
+                      'Caption Urdu',
+                      'Caption Symbols',
+                      'Caption Emoji'
+                    ]),
                 child: Stack(clipBehavior: Clip.hardEdge, children: [
                   Positioned(
                     left: designWidth * x,
@@ -267,28 +350,40 @@ class CaptionScene extends StatelessWidget {
                     child: FractionalTranslation(
                       translation: const Offset(-0.5, -0.5),
                       child: _CaptionGestureTransform(
-                          enabled: onTransformChanged != null,
-                          centerX: x,
-                          centerY: y,
-                          scale: lineScale,
-                          rotationDegrees: lineRotation,
-                          canvasWidth: frame.maxWidth,
-                          canvasHeight: frame.maxHeight,
-                          onChanged: onTransformChanged,
-                          child: CustomPaint(
+                        enabled: onTransformChanged != null,
+                        centerX: x,
+                        centerY: y,
+                        scale: lineScale,
+                        rotationDegrees: lineRotation,
+                        canvasWidth: frame.maxWidth,
+                        canvasHeight: frame.maxHeight,
+                        onChanged: onTransformChanged,
+                        child: CustomPaint(
                           foregroundPainter: onTransformChanged == null
                               ? null
                               : const _DottedSelectionPainter(),
                           child: Transform.translate(
-                          offset: motionEnabled && preset.motion == 'slide'
-                              ? Offset((1 - ((t - seg.start) / 0.28).clamp(0.0, 1.0)) * 24 * unit, 0)
-                              : Offset.zero,
-                          child: Opacity(
-                            opacity: motionEnabled && preset.motion != 'none' ? ((t - seg.start) /
-                                (preset.motion == 'cinematic' ? 0.42 : 0.18)).clamp(0.15, 1.0) : 1,
-                            child: panel,
-                          )),
-                          ),
+                              offset: motionEnabled && preset.motion == 'slide'
+                                  ? Offset(
+                                      (1 -
+                                              ((t - seg.start) / 0.28)
+                                                  .clamp(0.0, 1.0)) *
+                                          24 *
+                                          unit,
+                                      0)
+                                  : Offset.zero,
+                              child: Opacity(
+                                opacity:
+                                    motionEnabled && preset.motion != 'none'
+                                        ? ((t - seg.start) /
+                                                (preset.motion == 'cinematic'
+                                                    ? 0.42
+                                                    : 0.18))
+                                            .clamp(0.15, 1.0)
+                                        : 1,
+                                child: panel,
+                              )),
+                        ),
                       ),
                     ),
                   ),
@@ -376,7 +471,8 @@ class _CaptionGestureTransform extends StatefulWidget {
   final Widget child;
 
   @override
-  State<_CaptionGestureTransform> createState() => _CaptionGestureTransformState();
+  State<_CaptionGestureTransform> createState() =>
+      _CaptionGestureTransformState();
 }
 
 class _CaptionGestureTransformState extends State<_CaptionGestureTransform> {
@@ -391,8 +487,11 @@ class _CaptionGestureTransformState extends State<_CaptionGestureTransform> {
   @override
   void didUpdateWidget(covariant _CaptionGestureTransform oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (!_gesturing && (oldWidget.centerX != widget.centerX || oldWidget.centerY != widget.centerY ||
-        oldWidget.scale != widget.scale || oldWidget.rotationDegrees != widget.rotationDegrees)) {
+    if (!_gesturing &&
+        (oldWidget.centerX != widget.centerX ||
+            oldWidget.centerY != widget.centerY ||
+            oldWidget.scale != widget.scale ||
+            oldWidget.rotationDegrees != widget.rotationDegrees)) {
       _startX = widget.centerX;
       _startY = widget.centerY;
       _currentX = widget.centerX;
@@ -405,27 +504,37 @@ class _CaptionGestureTransformState extends State<_CaptionGestureTransform> {
   @override
   Widget build(BuildContext context) => GestureDetector(
         behavior: HitTestBehavior.opaque,
-        onScaleStart: widget.enabled ? (_) {
-          _gesturing = true;
-          _startX = widget.centerX;
-          _startY = widget.centerY;
-          _currentX = widget.centerX;
-          _currentY = widget.centerY;
-          _startScale = widget.scale;
-          _startRotation = widget.rotationDegrees;
-        } : null,
-        onScaleUpdate: widget.enabled ? (details) {
-          _currentX = (_currentX + details.focalPointDelta.dx / widget.canvasWidth)
-              .clamp(0.05, 0.95).toDouble();
-          _currentY = (_currentY + details.focalPointDelta.dy / widget.canvasHeight)
-              .clamp(0.05, 0.95).toDouble();
-          widget.onChanged?.call(
-            _currentX,
-            _currentY,
-            (_startScale * details.scale).clamp(0.5, 2.0).toDouble(),
-            (_startRotation + details.rotation * 180 / math.pi).clamp(-30, 30).toDouble(),
-          );
-        } : null,
+        onScaleStart: widget.enabled
+            ? (_) {
+                _gesturing = true;
+                _startX = widget.centerX;
+                _startY = widget.centerY;
+                _currentX = widget.centerX;
+                _currentY = widget.centerY;
+                _startScale = widget.scale;
+                _startRotation = widget.rotationDegrees;
+              }
+            : null,
+        onScaleUpdate: widget.enabled
+            ? (details) {
+                _currentX = (_currentX +
+                        details.focalPointDelta.dx / widget.canvasWidth)
+                    .clamp(0.05, 0.95)
+                    .toDouble();
+                _currentY = (_currentY +
+                        details.focalPointDelta.dy / widget.canvasHeight)
+                    .clamp(0.05, 0.95)
+                    .toDouble();
+                widget.onChanged?.call(
+                  _currentX,
+                  _currentY,
+                  (_startScale * details.scale).clamp(0.5, 2.0).toDouble(),
+                  (_startRotation + details.rotation * 180 / math.pi)
+                      .clamp(-30, 30)
+                      .toDouble(),
+                );
+              }
+            : null,
         onScaleEnd: widget.enabled ? (_) => _gesturing = false : null,
         child: Transform.rotate(
           angle: widget.rotationDegrees * math.pi / 180,

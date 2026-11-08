@@ -12,7 +12,7 @@ from pydantic import ValidationError
 
 from schemas.schemas import GeminiTranscriptResponse, StyleOverrides
 
-TEMPLATE_VERSION = "1.0.0"
+TEMPLATE_VERSION = "1.1.0"
 RENDERER = "flutter-scene"
 ASPECT_RATIOS = ["original", "9:16", "1:1", "4:5", "16:9"]
 
@@ -29,6 +29,7 @@ _items = [
     ("news", "Motion News", "Dynamic", ["broadcast", "lower-third"]),
     ("minimal", "Soft Minimal", "Common", ["minimal", "subtitles"]),
     ("cinematic", "Cinematic Glow", "Aesthetic", ["elegant", "serif"]),
+    ("liquid_glass", "Liquid Glass", "Aesthetic", ["glass", "translucent", "ios"]),
     ("podcast_interview", "Podcast Interview", "Common", ["speaker-label", "interview"]),
     ("simple_white", "Simple White", "Simple", ["static", "shadow"]),
     ("clean_dark", "Clean Dark", "Common", ["static", "panel"]),
@@ -58,7 +59,7 @@ _supported_settings = {
     "background_color": {"type": "color", "format": "#RRGGBB", "opacity": 0.75},
     "background_opacity": {"type": "number", "minimum": 0.0, "maximum": 1.0},
     "font_size": {"type": "integer", "minimum": 16, "maximum": 120},
-    "font_family": {"type": "enum", "values": ["Caption Sans", "Caption Arabic", "Caption Urdu"]},
+    "font_family": {"type": "enum", "values": ["Caption Sans", "Caption Arabic", "Caption Urdu", "Roboto", "Open Sans", "Lato", "Montserrat", "Poppins", "Inter"]},
     "letter_spacing": {"type": "number", "minimum": -1.0, "maximum": 4.0},
     "italic": {"type": "boolean"},
     "bold": {"type": "boolean"},
@@ -67,6 +68,7 @@ _supported_settings = {
     "position_y": {"type": "number", "minimum": 0.05, "maximum": 0.95},
     "scale": {"type": "number", "minimum": 0.5, "maximum": 2.0},
     "rotation_degrees": {"type": "number", "minimum": -30, "maximum": 30},
+    # Kept so projects saved by older clients still validate.
     "emojis_enabled": {"type": "boolean"},
     "motion_enabled": {"type": "boolean"},
 }
@@ -80,7 +82,7 @@ TEMPLATES = {
         "category": category,
         "tags": tags,
         "renderer": RENDERER,
-        "renderer_version": "flutter-scene-v3",
+        "renderer_version": "flutter-scene-v7",
         "supported_aspect_ratios": ASPECT_RATIOS,
         "supported_settings": _supported_settings,
         "defaults": {"motion_enabled": motion not in {"none"}},
@@ -92,7 +94,7 @@ TEMPLATES = {
     for motion in ({
         "classic": "pop", "neon": "pulse", "headline": "slide", "social": "bounce",
         "karaoke": "karaoke", "comic": "impact", "creator": "zoom", "news": "slide",
-        "minimal": "fade", "cinematic": "cinematic",
+        "minimal": "fade", "cinematic": "cinematic", "liquid_glass": "fade",
     }.get(template_id, "none"),)
 }
 
@@ -178,4 +180,9 @@ def validate_caption_configuration(template_id: str, caption_data: dict,
             active_translation_language
         )
     clean_transcript["active_track"] = active_track
+    caption_script = caption_data.get("caption_script")
+    if caption_script is not None:
+        if caption_script not in {"roman", "native"}:
+            raise ValueError("Caption text script selection is invalid.")
+        clean_transcript["caption_script"] = caption_script
     return resolved_id, clean_transcript, overrides.model_dump(exclude_none=True)

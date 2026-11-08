@@ -30,8 +30,13 @@ async def test_old_or_different_export_does_not_match(client, session_factory):
 async def test_persist_format_and_only_select_matching_export(client, session_factory):
     project_id = await create_project(session_factory)
     response = await client.put(f"/api/projects/{project_id}/captions", json={
-        "aspect_ratio": "1:1", "style_overrides": {"font_size": 60, "position_x": 0.2}})
+        "aspect_ratio": "1:1", "style_overrides": {"font_size": 60, "position_x": 0.2},
+        "caption_data": {"language": "Urdu", "segments": [], "caption_script": "roman"},
+    })
     assert response.status_code == 200
+    assert (await client.get(f"/api/projects/{project_id}/captions")).json()[
+        "caption_data"
+    ]["caption_script"] == "roman"
     current = response.json()["render_fingerprint"]
     async with session_factory() as session:
         export = Export(project_id=project_id, storage_key="match.mp4", render_fingerprint=current)
@@ -70,3 +75,29 @@ async def test_caption_render_ownership(client, session_factory):
     client.current_user["id"] = USER2
     assert (await client.get(f"/api/projects/{project_id}/captions")).status_code == 404
     assert (await client.post(f"/api/projects/{project_id}/render")).status_code == 404
+
+
+async def test_caption_script_conversion_keeps_source_language(client, session_factory, monkeypatch):
+    from routes import caption_routes
+    from schemas.schemas import GeminiTranscriptResponse
+
+    project_id = await create_project(session_factory)
+    received = {}
+
+    async def convert(transcript, target_script):
+        received["language"] = transcript.language
+        received["target_script"] = target_script
+        return GeminiTranscriptResponse(language=transcript.language, segments=[])
+
+    monkeypatch.setattr(caption_routes.gemini_service, "change_transcript_script", convert)
+    response = await client.post(
+        f"/api/projects/{project_id}/captions/script",
+        json={
+            "caption_data": {"language": "Urdu", "segments": []},
+            "target_script": "native",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["caption_data"]["language"] == "Urdu"
+    assert received == {"language": "Urdu", "target_script": "native"}

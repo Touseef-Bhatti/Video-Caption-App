@@ -7,7 +7,6 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../core/api_exception.dart';
-import '../../core/caption_languages.dart';
 import '../../core/chunked_uploader.dart';
 import '../../core/theme.dart';
 import '../../providers/upload_provider.dart';
@@ -42,8 +41,6 @@ class _UploadScreenState extends ConsumerState<UploadScreen> {
 
   PlatformFile? _picked;
   String? _localError;
-  String _captionLanguage = 'auto';
-  String _customCaptionLanguage = '';
 
   bool get _busy =>
       _progress.status == ChunkedUploadStatus.initializing ||
@@ -104,13 +101,6 @@ class _UploadScreenState extends ConsumerState<UploadScreen> {
     final name = _nameController.text.trim().isEmpty
         ? file.name
         : _nameController.text.trim();
-    final captionLanguage = _captionLanguage == 'other'
-        ? _customCaptionLanguage.trim()
-        : _captionLanguage;
-    if (_captionLanguage == 'other' && captionLanguage.isEmpty) {
-      setState(() => _localError = 'Enter the language name to continue.');
-      return;
-    }
     setState(() => _localError = null);
     try {
       final result = await _uploader.start(
@@ -118,7 +108,7 @@ class _UploadScreenState extends ConsumerState<UploadScreen> {
         fileName: file.name,
         contentType: contentType,
         totalSize: file.size,
-        captionLanguage: captionLanguage,
+        captionLanguage: 'auto',
         filePath: kIsWeb ? null : file.path,
         bytes: file.bytes,
       );
@@ -217,42 +207,6 @@ class _UploadScreenState extends ConsumerState<UploadScreen> {
                   controller: _nameController,
                   enabled: !_busy,
                   decoration: const InputDecoration(hintText: 'Project name'),
-                ),
-                const SizedBox(height: AppSpacing.md),
-                DropdownButtonFormField<String>(
-                  value: _captionLanguage,
-                  decoration: const InputDecoration(
-                    labelText: 'Spoken language',
-                    helperText:
-                        'Transcribe the speech in its spoken language. This does not translate it.',
-                    border: OutlineInputBorder(),
-                  ),
-                  items: [
-                    const DropdownMenuItem(
-                        value: 'auto', child: Text('Detect automatically')),
-                    for (final language in captionLanguages)
-                      DropdownMenuItem(value: language, child: Text(language)),
-                    const DropdownMenuItem(
-                        value: 'other', child: Text('Other language…')),
-                  ],
-                  onChanged: _busy
-                      ? null
-                      : (value) =>
-                          setState(() => _captionLanguage = value ?? 'auto'),
-                ),
-                if (_captionLanguage == 'other') ...[
-                  const SizedBox(height: AppSpacing.sm),
-                  TextField(
-                    enabled: !_busy,
-                    decoration:
-                        const InputDecoration(labelText: 'Spoken language'),
-                    onChanged: (value) => _customCaptionLanguage = value,
-                  ),
-                ],
-                const SizedBox(height: AppSpacing.sm),
-                Text(
-                  'Captions keep the spoken language and wording. You can translate them later in the editor.',
-                  style: Theme.of(context).textTheme.bodySmall,
                 ),
                 const SizedBox(height: AppSpacing.lg),
                 if (_busy ||

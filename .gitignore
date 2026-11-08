@@ -2,3 +2,6 @@
 **/.env
 **/.env.*
 !**/.env.example
+
+# Flutter web build output (generated locally or by Cloudflare Pages)
+/frontend/build/

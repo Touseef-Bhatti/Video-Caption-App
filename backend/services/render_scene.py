@@ -2,7 +2,7 @@
 import hashlib
 import json
 
-RENDERER_VERSION = "flutter-scene-v3"
+RENDERER_VERSION = "flutter-scene-v7"
 FPS = 30
 
 

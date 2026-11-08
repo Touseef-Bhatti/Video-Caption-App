@@ -32,6 +32,11 @@ class VideoProbe:
     height: int
     has_audio: bool
     mime_guess: str
+    video_codec: str = ""
+    frame_rate: float | None = None
+    pixel_format: str = ""
+    bit_rate: int | None = None
+    audio_codec: str = ""
 
 
 def probe_video(path: Path) -> VideoProbe:
@@ -67,12 +72,30 @@ def probe_video(path: Path) -> VideoProbe:
                      if "rotation" in s), video_stream.get("tags", {}).get("rotate", 0))
     if round(float(rotation)) % 180 == 90:
         width, height = height, width
+    frame_rate = None
+    rate_text = video_stream.get("avg_frame_rate") or video_stream.get("r_frame_rate")
+    try:
+        rate_numerator, rate_denominator = map(float, rate_text.split("/"))
+        if rate_denominator > 0:
+            frame_rate = rate_numerator / rate_denominator
+    except (ValueError, TypeError, AttributeError):
+        pass
+    bit_rate = video_stream.get("bit_rate") or fmt.get("bit_rate")
+    try:
+        bit_rate = int(bit_rate) if bit_rate is not None else None
+    except (TypeError, ValueError):
+        bit_rate = None
     return VideoProbe(
         duration_seconds=duration,
         width=width,
         height=height,
         has_audio=audio_stream is not None,
         mime_guess=fmt.get("format_name", ""),
+        video_codec=video_stream.get("codec_name", ""),
+        frame_rate=frame_rate,
+        pixel_format=video_stream.get("pix_fmt", ""),
+        bit_rate=bit_rate,
+        audio_codec=audio_stream.get("codec_name", "") if audio_stream else "",
     )
 
 
@@ -114,22 +137,22 @@ CAPTION_PRESETS: dict[str, dict] = {
     # the final burned-in export instead of existing only in the preview.
     "classic": {"font": "Noto Sans", "size": 52, "primary": "&H00FFFFFF", "highlight": "&H0000D7FF",
                 "emphasis": "&H000066FF", "outline": 0, "back": "&H47000000", "bold": True,
-                "position": "center", "motion": "pop", "effect": "✦", "scales_with_weight": True},
+                "position": "bottom", "motion": "pop", "effect": "✦", "scales_with_weight": True},
     "neon": {"font": "Noto Sans", "size": 48, "primary": "&H00FFFFFF", "highlight": "&H00FFE500",
              "emphasis": "&H00922DFF", "outline": 0, "back": "&H26180C1A", "bold": True,
-             "position": "center", "motion": "pulse", "effect": "✧", "scales_with_weight": True},
+             "position": "bottom", "motion": "pulse", "effect": "✧", "scales_with_weight": True},
     "headline": {"font": "Noto Sans", "size": 44, "primary": "&H00FFFFFF", "highlight": "&H00C1F1FF",
                  "emphasis": "&H00FFFFFF", "outline": 0, "back": "&H10006AFF", "bold": True,
                  "position": "bottom", "motion": "slide", "effect": "◆", "scales_with_weight": True},
     "social": {"font": "Noto Sans", "size": 50, "primary": "&H00FFFFFF", "highlight": "&H0000F0FF",
                "emphasis": "&H0000A2FF", "outline": 0, "back": "&H47000000", "bold": True,
-               "position": "center", "motion": "bounce", "effect": "🔥", "scales_with_weight": True},
+               "position": "bottom", "motion": "bounce", "effect": "🔥", "scales_with_weight": True},
     "karaoke": {"font": "Noto Sans", "size": 46, "primary": "&H00C8C8C8", "highlight": "&H0000D7FF",
                 "emphasis": "&H00008AFF", "outline": 0, "back": "&H38000000", "bold": True,
                 "position": "bottom", "motion": "karaoke", "effect": "♪", "scales_with_weight": True},
     "comic": {"font": "Noto Sans", "size": 52, "primary": "&H00FFFFFF", "highlight": "&H0000D7FF",
               "emphasis": "&H00303BFF", "outline": 0, "back": "&H261B1B22", "bold": True,
-              "position": "center", "motion": "impact", "effect": "💥", "scales_with_weight": True},
+              "position": "bottom", "motion": "impact", "effect": "💥", "scales_with_weight": True},
     "creator": {"font": "Noto Sans", "size": 44, "primary": "&H00FFFFFF", "highlight": "&H006B6BFF",
                 "emphasis": "&H00922DFF", "outline": 0, "back": "&H261E1E24", "bold": True,
                 "position": "bottom", "motion": "zoom", "effect": "●", "scales_with_weight": True},
@@ -139,6 +162,9 @@ CAPTION_PRESETS: dict[str, dict] = {
     "minimal": {"font": "Noto Sans", "size": 38, "primary": "&H00FFFFFF", "highlight": "&H00E3FFB8",
                 "emphasis": "&H00FFFFFF", "outline": 0, "back": "&H70000000", "bold": False,
                 "position": "bottom", "motion": "fade", "effect": "", "scales_with_weight": False},
+    "liquid_glass": {"font": "Noto Sans", "size": 46, "primary": "&H00FFFFFF", "highlight": "&H00E7BCFF",
+                    "emphasis": "&H00FFC7D8", "outline": 0, "back": "&H70FFFFFF", "bold": True,
+                    "position": "bottom", "motion": "fade", "effect": "", "scales_with_weight": False},
     "cinematic": {"font": "Noto Serif", "size": 42, "primary": "&H00EDEDED", "highlight": "&H008AD9FF",
                   "emphasis": "&H0047B3FF", "outline": 0, "back": "&H66000000", "bold": False,
                   "position": "bottom", "motion": "cinematic", "effect": "✦", "scales_with_weight": True},

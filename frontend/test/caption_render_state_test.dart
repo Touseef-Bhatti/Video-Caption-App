@@ -15,9 +15,10 @@ class FakeApi extends ApiClient {
   String? exportId;
   Completer<void>? saving;
   Map<String, dynamic>? lastSave;
+  Map<String, dynamic>? captionData;
   @override
   Future<Map<String, dynamic>> get(String path, {Map<String, dynamic>? query}) async => {
-    'caption_data': {'language': 'English', 'segments': []},
+    'caption_data': captionData ?? {'language': 'English', 'segments': []},
     'style_preset': 'classic', 'aspect_ratio': '1:1',
     'render_fingerprint': fingerprint, 'matching_export_id': exportId,
   };
@@ -29,7 +30,19 @@ class FakeApi extends ApiClient {
     return {'render_fingerprint': fingerprint};
   }
   @override
-  Future<Map<String, dynamic>> post(String path, {Object? data}) async => {'job_id': 'job'};
+  Future<Map<String, dynamic>> post(String path, {Object? data}) async {
+    if (path.endsWith('/captions/script')) {
+      return {
+        'caption_data': {
+          'language': 'Urdu',
+          'segments': [
+            {'start': 0.0, 'end': 1.0, 'text': 'آپ', 'words': []},
+          ],
+        },
+      };
+    }
+    return {'job_id': 'job'};
+  }
 }
 
 void main() {
@@ -88,5 +101,47 @@ void main() {
     await save;
     expect(api.lastSave!['aspect_ratio'], '4:5');
     expect(container.read(captionEditorProvider('project')).hasUnsavedChanges, isTrue);
+  });
+
+  test('changing caption script preserves the original language and translations', () async {
+    final api = FakeApi()
+      ..captionData = {
+        'language': 'Urdu',
+        'segments': [
+          {'start': 0.0, 'end': 1.0, 'text': 'aap', 'words': []},
+        ],
+        'source_track': {
+          'language': 'Urdu',
+          'segments': [
+            {'start': 0.0, 'end': 1.0, 'text': 'aap', 'words': []},
+          ],
+        },
+        'translation_tracks': [
+          {
+            'language': 'English',
+            'segments': [
+              {'start': 0.0, 'end': 1.0, 'text': 'you', 'words': []},
+            ],
+          },
+        ],
+        'active_track': 'translation',
+        'active_translation_language': 'English',
+        'caption_script': 'roman',
+      };
+    final container = ProviderContainer(overrides: [
+      apiClientProvider.overrideWithValue(api),
+    ]);
+    final notifier = container.read(captionEditorProvider('project').notifier);
+    await Future<void>.delayed(Duration.zero);
+    addTearDown(container.dispose);
+
+    expect(await notifier.setCaptionScript('native'), isTrue);
+    final transcript = container.read(captionEditorProvider('project')).transcript!;
+    expect(transcript.language, 'English');
+    expect(transcript.activeTrack, 'translation');
+    expect(transcript.segments.single.text, 'you');
+    expect(transcript.sourceTrack!.language, 'Urdu');
+    expect(transcript.sourceTrack!.segments.single.text, 'آپ');
+    expect(transcript.captionScript, 'native');
   });
 }

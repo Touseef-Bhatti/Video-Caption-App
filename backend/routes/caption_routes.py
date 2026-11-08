@@ -7,7 +7,7 @@ from app.security import get_current_user_id
 from models.models import Caption, Project, ProcessingJob, JobStatus, Export
 from services.render_scene import caption_snapshot, fingerprint
 from schemas.schemas import (
-    CaptionTranslateRequest, CaptionUpdateRequest, GeminiTranscriptResponse,
+    CaptionScriptRequest, CaptionTranslateRequest, CaptionUpdateRequest, GeminiTranscriptResponse,
     RenderRequest, VideoUploadResponse,
 )
 from workers.tasks import rerender_project_job
@@ -64,6 +64,31 @@ async def translate_captions(
     except Exception as exc:
         raise HTTPException(status_code=502, detail="Gemini could not generate captions in that language. Please try again.") from exc
     return {"caption_data": translated.model_dump()}
+
+
+@router.post("/{project_id}/captions/script")
+async def change_caption_script(
+    project_id: str, payload: CaptionScriptRequest,
+    user_id: str = Depends(get_current_user_id), db: AsyncSession = Depends(get_db),
+):
+    await _get_owned_project(project_id, user_id, db)
+    caption = await db.scalar(select(Caption).where(Caption.project_id == project_id))
+    if not caption:
+        raise HTTPException(status_code=404, detail="No captions found for this project yet.")
+    try:
+        transcript = GeminiTranscriptResponse.model_validate(payload.caption_data)
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail="Caption data is invalid.") from exc
+    try:
+        converted = await gemini_service.change_transcript_script(
+            transcript, payload.target_script
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502,
+            detail="Could not change the caption text script. Please try again.",
+        ) from exc
+    return {"caption_data": converted.model_dump()}
 
 
 @router.put("/{project_id}/captions")
@@ -127,8 +152,27 @@ async def trigger_render(
 
     aspect_ratio = payload.aspect_ratio if payload else caption.aspect_ratio
     caption.aspect_ratio = aspect_ratio
+    quality = payload.quality if payload else "standard"
+    snapshot = caption_snapshot(caption, aspect_ratio)
+    snapshot_fingerprint = fingerprint(snapshot)
+
+    # An unchanged scene at the same quality already has byte-identical render
+    # inputs. Reuse its completed export instead of queueing another encode.
+    existing_export = await db.scalar(
+        select(Export).where(
+            Export.project_id == project.id,
+            Export.render_fingerprint == snapshot_fingerprint,
+            Export.quality == quality,
+            Export.job_id.is_not(None),
+        ).order_by(Export.created_at.desc())
+    )
+    if existing_export:
+        existing_job = await db.get(ProcessingJob, existing_export.job_id)
+        if existing_job and existing_job.status == JobStatus.completed:
+            return VideoUploadResponse(project_id=project.id, job_id=existing_job.id)
+
     job = ProcessingJob(project_id=project.id, status=JobStatus.queued, stage="Queued", progress=0,
-                        render_snapshot=caption_snapshot(caption, aspect_ratio))
+                        render_snapshot=snapshot)
     db.add(job)
     project.status = "processing"
     await db.commit()
@@ -136,7 +180,7 @@ async def trigger_render(
 
     rerender_project_job.delay(
         job.id,
-        (payload.quality if payload else "standard"),
+        quality,
         (payload.aspect_ratio if payload else "original"),
     )
     return VideoUploadResponse(project_id=project.id, job_id=job.id)

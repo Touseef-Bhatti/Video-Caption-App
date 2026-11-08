@@ -14,6 +14,8 @@ import 'widgets/caption_scene.dart';
 external set captionLoad(JSFunction value);
 @JS('captionFrame')
 external set captionFrame(JSFunction value);
+@JS('captionSetTime')
+external set captionSetTime(JSFunction value);
 @JS('captionReady')
 external set captionReady(JSBoolean value);
 
@@ -49,12 +51,18 @@ class _RendererState extends State<_Renderer> {
       });
     }).toJS;
     captionFrame = ((JSNumber seconds) => capture(seconds.toDartDouble).toJS).toJS;
+    captionSetTime =
+        ((JSNumber seconds) => setFrameTime(seconds.toDartDouble).toJS).toJS;
     captionReady = true.toJS;
   }
 
-  Future<JSString> capture(double seconds) async {
+  Future<void> setFrameTime(double seconds) async {
     setState(() => time = seconds);
     await WidgetsBinding.instance.endOfFrame;
+  }
+
+  Future<JSString> capture(double seconds) async {
+    await setFrameTime(seconds);
     final renderObject = boundary.currentContext!.findRenderObject()! as RenderRepaintBoundary;
     final image = await renderObject.toImage(pixelRatio: 1);
     try {

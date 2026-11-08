@@ -6,6 +6,12 @@ Future<void> loadCaptionFonts() async {
     'Caption Sans': ['NotoSans-Regular.ttf', 'NotoSans-Bold.ttf'],
     'Caption Arabic': ['NotoNaskhArabic-Regular.ttf'],
     'Caption Urdu': ['NotoNastaliqUrdu-Regular.ttf'],
+    'Roboto': ['Roboto-Variable.ttf'],
+    'Open Sans': ['OpenSans-Variable.ttf'],
+    'Lato': ['Lato-Regular.ttf', 'Lato-Bold.ttf'],
+    'Montserrat': ['Montserrat-Variable.ttf'],
+    'Poppins': ['Poppins-Regular.ttf', 'Poppins-Bold.ttf'],
+    'Inter': ['Inter-Variable.ttf'],
     'Caption Symbols': ['NotoSansSymbols2-Regular.ttf'],
     'Caption Emoji': ['NotoColorEmoji.ttf'],
   }.entries) {
