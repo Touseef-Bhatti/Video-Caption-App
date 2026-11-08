@@ -38,4 +38,4 @@ COPY --from=renderer /renderer-src/build/renderer /opt/caption-renderer
 RUN mkdir -p /tmp/caption_app/uploads /tmp/caption_app/processing /tmp/caption_app/outputs
 
 EXPOSE 8000
-CMD ["gunicorn", "app.main:app", "-k", "uvicorn.workers.UvicornWorker", "--bind", "0.0.0.0:8000", "--workers", "4", "--timeout", "120"]
+CMD ["sh", "-c", "alembic upgrade head && exec gunicorn app.main:app -k uvicorn.workers.UvicornWorker --bind 0.0.0.0:8000 --workers 4 --timeout 120"]
