@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
 
 import '../../core/theme.dart';
 import '../../providers/settings_provider.dart';
@@ -53,6 +54,18 @@ class SettingsScreen extends ConsumerWidget {
                 'Your videos are private to your account and are only reachable through short-lived signed links. '
                 'Delete a project at any time to remove its video and exports.',
                 style: theme.textTheme.bodySmall,
+              ),
+              const SizedBox(height: AppSpacing.xl),
+              Text('Support', style: theme.textTheme.titleMedium),
+              ListTile(
+                contentPadding: EdgeInsets.zero,
+                leading: const Icon(Icons.monitor_heart_outlined),
+                title: const Text('System diagnostics'),
+                subtitle: const Text(
+                  'Check backend services and processing setup',
+                ),
+                trailing: const Icon(Icons.chevron_right),
+                onTap: () => context.push('/diagnostics'),
               ),
             ],
           ),

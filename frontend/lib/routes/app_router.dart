@@ -15,6 +15,7 @@ import '../screens/help/help_screen.dart';
 import '../screens/preview/preview_screen.dart';
 import '../screens/processing/processing_screen.dart';
 import '../screens/profile/profile_screen.dart';
+import '../screens/settings/diagnostics_screen.dart';
 import '../screens/settings/settings_screen.dart';
 import '../screens/upload/upload_screen.dart';
 
@@ -57,6 +58,10 @@ final routerProvider = Provider<GoRouter>((ref) {
           GoRoute(path: '/dashboard', builder: (_, __) => const DashboardScreen()),
           GoRoute(path: '/upload', builder: (_, __) => const UploadScreen()),
           GoRoute(path: '/settings', builder: (_, __) => const SettingsScreen()),
+          GoRoute(
+            path: '/diagnostics',
+            builder: (_, __) => const DiagnosticsScreen(),
+          ),
           GoRoute(path: '/profile', builder: (_, __) => const ProfileScreen()),
           GoRoute(path: '/help', builder: (_, __) => const HelpScreen()),
         ],
