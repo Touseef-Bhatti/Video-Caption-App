@@ -15,7 +15,7 @@ class ServiceSupervisionTests(unittest.TestCase):
         real_popen = subprocess.Popen
 
         def launch(command, **kwargs):
-            script = api_script if command[0] == "gunicorn" else worker_script
+            script = api_script if command[0] == "uvicorn" else worker_script
             process = real_popen([sys.executable, "-c", script], **kwargs)
             children.append(process)
             return process

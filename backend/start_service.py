@@ -3,6 +3,7 @@
 import os
 import signal
 import subprocess
+import sys
 import threading
 import time
 from urllib.error import URLError
@@ -59,17 +60,14 @@ def main(stop=None):
             return 0
         port = os.environ.get("PORT", "8000")
         api = subprocess.Popen([
-            "gunicorn", "app.main:app", "-k", "uvicorn.workers.UvicornWorker",
-            "--bind", f"0.0.0.0:{port}", "--workers", "1", "--timeout", "120",
+            "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", port,
         ], start_new_session=True)
         processes.append(api)
         # Startup recovery must finish before the worker starts consuming jobs.
         if not _wait_for_api(api, stop, port):
             return 0
         worker = subprocess.Popen([
-            "celery", "-A", "workers.celery_app", "worker", "--beat",
-            "--loglevel=info", "--pool=solo", "--concurrency=1",
-            "--without-gossip", "--without-mingle",
+            sys.executable, "start_worker.py",
         ], start_new_session=True)
         processes.append(worker)
         print("API and single-job caption worker started", flush=True)
