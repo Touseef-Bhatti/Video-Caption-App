@@ -58,7 +58,7 @@ class _SceneRuntime:
         self.thread.start()
         self.origin = f"http://127.0.0.1:{self.server.server_port}"
         self.playwright = sync_playwright().start()
-        browser_args = ["--disable-dev-shm-usage", "--use-angle=swiftshader"]
+        browser_args = ["--disable-dev-shm-usage", "--use-angle=swiftshader", "--enable-unsafe-swiftshader"]
         if os.environ.get("CAPTION_RENDERER_LOW_MEMORY") == "1":
             browser_args.extend(["--single-process", "--no-zygote"])
         self.browser = self.playwright.chromium.launch(
