@@ -5,8 +5,8 @@ import 'package:flutter/material.dart';
 
 import '../models/caption.dart';
 
-const captionFramesPerSecond = 30;
-const captionRendererVersion = 'flutter-scene-v7';
+const captionFramesPerSecond = 15;
+const captionRendererVersion = 'flutter-scene-v8';
 
 String captionPosition(String _) => 'bottom';
 
@@ -71,6 +71,7 @@ class CaptionScene extends StatelessWidget {
     required this.presetId,
     required this.overrides,
     required this.time,
+    this.canvasScale = 1,
     this.onTransformChanged,
   });
 
@@ -78,6 +79,7 @@ class CaptionScene extends StatelessWidget {
   final String presetId;
   final StyleOverrides overrides;
   final double time;
+  final double canvasScale;
   final void Function(double x, double y, double scale, double rotationDegrees)?
       onTransformChanged;
 
@@ -117,10 +119,11 @@ class CaptionScene extends StatelessWidget {
     final font = seg.fontFamily == 'auto'
         ? languageFont
         : seg.fontFamily ?? overrides.fontFamily ?? languageFont;
-    final size = (seg.fontSize ?? overrides.fontSize ?? 44).toDouble();
+    final size = (seg.fontSize ?? overrides.fontSize ?? 44).toDouble() *
+        canvasScale;
     final motionEnabled = seg.motionEnabled ?? overrides.motionEnabled;
     // Existing panel spacing, normalized with the old 18px / 44 size ratio.
-    const unit = 44 / 18;
+    final unit = 44 / 18 * canvasScale;
 
     Color colorFor(WordStyle style, int wordIndex) {
       if (presetInfoFor(activePresetId).id == 'karaoke') {
@@ -178,13 +181,14 @@ class CaptionScene extends StatelessWidget {
 
     return LayoutBuilder(builder: (context, frame) {
       final designWidth = frame.maxWidth / frame.maxHeight * 1080;
-      final isLiquidGlass = preset.id == 'liquid_glass';
+      final isLiquidGlass = preset.id == 'liquid_glass' &&
+          overrides.liquidGlassEnabled;
       final panelRadius = BorderRadius.circular(
           (preset.id == 'headline' || preset.id == 'news' ? 4 : 10) * unit);
       final basePanelContent = ConstrainedBox(
         constraints: BoxConstraints(maxWidth: designWidth * 0.88),
         child: Container(
-          padding: const EdgeInsets.symmetric(
+          padding: EdgeInsets.symmetric(
               horizontal: 12 * unit, vertical: 7 * unit),
           decoration: BoxDecoration(
             color: overrides.backgroundColor != null
@@ -256,7 +260,8 @@ class CaptionScene extends StatelessWidget {
                             style: TextStyle(
                                 color: colorFor(words[i].style, i),
                                 fontSize: size,
-                                letterSpacing: overrides.letterSpacing ?? 0,
+                                letterSpacing:
+                                    (overrides.letterSpacing ?? 0) * canvasScale,
                                 shadows: isLiquidGlass
                                     ? const [
                                         Shadow(

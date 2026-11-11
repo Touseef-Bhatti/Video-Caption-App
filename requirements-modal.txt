@@ -1,0 +1,3 @@
+# Local deploy CLI. Backend dependencies are installed by backend/Dockerfile.
+modal==1.6.3
+python-dotenv==1.0.1

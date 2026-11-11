@@ -21,7 +21,6 @@ external set captionReady(JSBoolean value);
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  await loadCaptionFonts();
   runApp(const _Renderer());
 }
 
@@ -40,20 +39,47 @@ class _RendererState extends State<_Renderer> {
   @override
   void initState() {
     super.initState();
-    captionLoad = ((JSString input) {
-      final data = jsonDecode(input.toDart) as Map<String, dynamic>;
-      if (data['renderer_version'] != captionRendererVersion) {
-        throw StateError('Caption renderer version mismatch. Rebuild the renderer.');
-      }
-      setState(() {
-        scene = data;
-        transcript = CaptionTranscript.fromJson(data['caption_data'] as Map<String, dynamic>);
-      });
-    }).toJS;
+    captionLoad = ((JSString input) => applyScene(input.toDart).toJS).toJS;
     captionFrame = ((JSNumber seconds) => capture(seconds.toDartDouble).toJS).toJS;
     captionSetTime =
         ((JSNumber seconds) => setFrameTime(seconds.toDartDouble).toJS).toJS;
     captionReady = true.toJS;
+  }
+
+  Future<void> applyScene(String input) async {
+    final data = jsonDecode(input) as Map<String, dynamic>;
+    if (data['renderer_version'] != captionRendererVersion) {
+      throw StateError('Caption renderer version mismatch. Rebuild the renderer.');
+    }
+    final nextTranscript = CaptionTranscript.fromJson(
+        data['caption_data'] as Map<String, dynamic>);
+    final overrides = StyleOverrides.fromJson(
+        data['style_overrides'] as Map<String, dynamic>?);
+    final fonts = <String>{};
+    final words = <String>[for (final segment in nextTranscript.segments) segment.text]
+        .join(' ');
+    for (final segment in nextTranscript.segments) {
+      final languageFont = captionFontForText(segment.text, nextTranscript.language);
+      final font = segment.fontFamily == 'auto'
+          ? languageFont
+          : segment.fontFamily ?? overrides.fontFamily ?? languageFont;
+      if ({
+        'Caption Sans', 'Caption Arabic', 'Caption Urdu', 'Roboto', 'Open Sans',
+        'Lato', 'Montserrat', 'Poppins', 'Inter'
+      }.contains(font)) fonts.add(font);
+    }
+    if (fonts.isEmpty) fonts.add('Caption Sans');
+    if (RegExp(r'[\u2600-\u27BF]').hasMatch(words)) {
+      fonts.add('Caption Symbols');
+    }
+    if (RegExp(r'[\u{1F000}-\u{1FAFF}]', unicode: true).hasMatch(words)) {
+      fonts.add('Caption Emoji');
+    }
+    await loadCaptionFonts(families: fonts);
+    setState(() {
+      scene = data;
+      transcript = nextTranscript;
+    });
   }
 
   Future<void> setFrameTime(double seconds) async {
@@ -83,6 +109,7 @@ class _RendererState extends State<_Renderer> {
         presetId: scene!['style_preset'] as String,
         overrides: StyleOverrides.fromJson(scene!['style_overrides'] as Map<String, dynamic>?),
         time: time,
+        canvasScale: (scene!['canvas_scale'] as num?)?.toDouble() ?? 1,
       ),
     ),
   );

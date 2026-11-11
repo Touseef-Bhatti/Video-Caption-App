@@ -71,6 +71,7 @@ _supported_settings = {
     # Kept so projects saved by older clients still validate.
     "emojis_enabled": {"type": "boolean"},
     "motion_enabled": {"type": "boolean"},
+    "liquid_glass_enabled": {"type": "boolean"},
 }
 
 TEMPLATES = {
@@ -82,10 +83,10 @@ TEMPLATES = {
         "category": category,
         "tags": tags,
         "renderer": RENDERER,
-        "renderer_version": "flutter-scene-v7",
+        "renderer_version": "flutter-scene-v8",
         "supported_aspect_ratios": ASPECT_RATIOS,
         "supported_settings": _supported_settings,
-        "defaults": {"motion_enabled": motion not in {"none"}},
+        "defaults": {"motion_enabled": False, "liquid_glass_enabled": False},
         "compatibility": {"unicode": True, "rtl": True, "transparent_overlay": True},
         "optional_elements": ["speaker_label"] if template_id == "podcast_interview" else [],
         "resource_limits": {"max_segments": 10000, "max_words_per_segment": 200},

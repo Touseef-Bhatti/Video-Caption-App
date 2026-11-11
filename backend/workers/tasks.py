@@ -19,7 +19,7 @@ import shutil
 import time
 from pathlib import Path
 
-from workers.celery_app import celery_app
+from workers.task_queue import task
 from workers.db_sync import SyncSessionLocal
 from app.config import get_settings
 from models.models import ProcessingJob, Project, Video, Caption, Export, JobStatus, Usage
@@ -74,7 +74,7 @@ def _save_diagnostics(session, job: ProcessingJob, diagnostics: dict) -> None:
     session.commit()
 
 
-@celery_app.task(bind=True, name="workers.tasks.process_video_job")
+@task(bind=True, name="workers.tasks.process_video_job")
 def process_video_job(self, job_id: str) -> None:
     session = SyncSessionLocal()
     work_dir = Path(settings.temp_storage_dir) / "processing" / job_id
@@ -94,6 +94,7 @@ def process_video_job(self, job_id: str) -> None:
     }
 
     try:
+        _check_cancelled(session, job_id)
         job.celery_task_id = self.request.id
         _update_job(session, job, status=JobStatus.preparing, stage="Preparing video", progress=5)
         _check_cancelled(session, job_id)
@@ -200,7 +201,7 @@ def process_video_job(self, job_id: str) -> None:
         session.close()
 
 
-@celery_app.task(bind=True, name="workers.tasks.rerender_project_job")
+@task(bind=True, name="workers.tasks.rerender_project_job")
 def rerender_project_job(
     self,
     job_id: str,
@@ -240,6 +241,8 @@ def rerender_project_job(
         if caption is None:
             raise ValueError("No captions found for this project yet.")
 
+        _check_cancelled(session, job_id)
+        job.celery_task_id = self.request.id
         _update_job(session, job, status=JobStatus.preparing, stage="Preparing video", progress=10)
         _check_cancelled(session, job_id)
         local_video_path = work_dir / "source.mp4"
@@ -327,7 +330,7 @@ def rerender_project_job(
         session.close()
 
 
-@celery_app.task(name="workers.tasks.cleanup_expired_files")
+@task(name="workers.tasks.cleanup_expired_files")
 def cleanup_expired_files() -> None:
     """Scheduled periodically (see celery beat config in docker-compose).
     Deletes temp files older than TEMP_FILE_RETENTION_MINUTES and expired
@@ -364,7 +367,12 @@ def cleanup_expired_files() -> None:
     try:
         stale = session.query(UploadSession).filter(UploadSession.status == "uploading").all()
         for s in stale:
-            if not (Path(settings.temp_storage_dir) / "uploads" / s.id).exists() and s.updated_at.timestamp() < cutoff:
+            if settings.chunk_storage_backend == "object_storage":
+                if s.updated_at.timestamp() < cutoff:
+                    from services.chunked_upload_service import cleanup_session
+                    cleanup_session(s.id)
+                    s.status = "cancelled"
+            elif not (Path(settings.temp_storage_dir) / "uploads" / s.id).exists() and s.updated_at.timestamp() < cutoff:
                 s.status = "cancelled"
         session.commit()
     finally:
@@ -376,6 +384,9 @@ def recover_orphaned_jobs() -> None:
     an in-progress status when the process starts means a previous worker
     crashed mid-job -- those files are gone, so we fail them cleanly rather
     than leaving them stuck in 'processing' forever."""
+    # An API container starting says nothing about separate Modal workers.
+    if settings.job_backend == "modal":
+        return
     in_progress = [
         JobStatus.preparing, JobStatus.extracting_audio, JobStatus.transcribing,
         JobStatus.creating_captions, JobStatus.rendering, JobStatus.finalizing,

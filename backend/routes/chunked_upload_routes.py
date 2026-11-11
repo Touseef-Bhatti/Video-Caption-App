@@ -14,6 +14,9 @@ which indices already landed so it only re-sends what's missing, rather
 than restarting the whole upload.
 """
 import math
+import asyncio
+import uuid
+from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
@@ -103,7 +106,7 @@ async def upload_chunk(
     chunk_dir = chunks.session_dir(upload_id)
     chunk_dir.mkdir(parents=True, exist_ok=True)
     path = chunks.chunk_path(upload_id, chunk_index)
-    tmp_path = path.with_suffix(".part")
+    tmp_path = path.with_suffix(f".{uuid.uuid4().hex}.part")
 
     # A chunk may legitimately be smaller than chunk_size_bytes only if it's
     # the LAST chunk -- every other chunk must be exactly chunk_size_bytes.
@@ -128,14 +131,19 @@ async def upload_chunk(
         tmp_path.unlink(missing_ok=True)
         raise HTTPException(status_code=400, detail="Received an empty chunk.")
 
-    tmp_path.replace(path)  # atomic on the same filesystem -- a retry overwrites cleanly, never a partial file
+    try:
+        await asyncio.to_thread(chunks.persist_chunk, upload_id, chunk_index, tmp_path)
+    finally:
+        tmp_path.unlink(missing_ok=True)
+    session.updated_at = datetime.utcnow()
+    await db.commit()
     return {"chunk_index": chunk_index, "received_bytes": received}
 
 
 @router.get("/{upload_id}/status", response_model=UploadStatusResponse)
 async def get_upload_status(upload_id: str, user_id: str = Depends(get_current_user_id), db: AsyncSession = Depends(get_db)):
     session = await _get_owned_session(upload_id, user_id, db)
-    received = sorted(chunks.received_chunk_indices(upload_id, session.total_chunks))
+    received = sorted(await asyncio.to_thread(chunks.received_chunk_indices, upload_id, session.total_chunks))
     return UploadStatusResponse(
         upload_id=upload_id, total_chunks=session.total_chunks,
         received_chunks=received, completed=session.status == "completed",
@@ -145,10 +153,10 @@ async def get_upload_status(upload_id: str, user_id: str = Depends(get_current_u
 @router.post("/{upload_id}/complete", response_model=VideoUploadResponse, status_code=201)
 async def complete_upload(upload_id: str, user_id: str = Depends(get_current_user_id), db: AsyncSession = Depends(get_db)):
     session = await _get_owned_session(upload_id, user_id, db)
-    if session.status == "completed":
-        raise HTTPException(status_code=400, detail="This upload has already been completed.")
+    if session.status != "uploading":
+        raise HTTPException(status_code=400, detail="This upload has already been completed or cancelled.")
 
-    received = chunks.received_chunk_indices(upload_id, session.total_chunks)
+    received = await asyncio.to_thread(chunks.received_chunk_indices, upload_id, session.total_chunks)
     missing = [i for i in range(session.total_chunks) if i not in received]
     if missing:
         raise HTTPException(
@@ -156,9 +164,9 @@ async def complete_upload(upload_id: str, user_id: str = Depends(get_current_use
             detail=f"{len(missing)} of {session.total_chunks} chunks are still missing. Resend them before completing.",
         )
 
-    assembled_path = chunks.session_dir(upload_id) / "assembled.tmp"
+    assembled_path = chunks.session_dir(upload_id) / f"assembled-{uuid.uuid4().hex}.tmp"
     try:
-        chunks.assemble_chunks(upload_id, session.total_chunks, assembled_path)
+        await asyncio.to_thread(chunks.assemble_chunks, upload_id, session.total_chunks, assembled_path)
         project_id, job_id = await finalize_upload(
             local_path=assembled_path,
             declared_mime=session.mime_type,
@@ -171,12 +179,12 @@ async def complete_upload(upload_id: str, user_id: str = Depends(get_current_use
             db=db,
         )
     except UploadValidationError as e:
-        chunks.cleanup_session(upload_id)
+        await asyncio.to_thread(chunks.cleanup_session, upload_id)
         raise HTTPException(status_code=422, detail=str(e))
 
     session.status = "completed"
     await db.commit()
-    chunks.cleanup_session(upload_id)  # chunks are no longer needed once the assembled file is in object storage
+    await asyncio.to_thread(chunks.cleanup_session, upload_id)
 
     return VideoUploadResponse(project_id=project_id, job_id=job_id)
 
@@ -184,6 +192,6 @@ async def complete_upload(upload_id: str, user_id: str = Depends(get_current_use
 @router.delete("/{upload_id}", status_code=204)
 async def cancel_upload(upload_id: str, user_id: str = Depends(get_current_user_id), db: AsyncSession = Depends(get_db)):
     session = await _get_owned_session(upload_id, user_id, db)
-    chunks.cleanup_session(upload_id)
+    await asyncio.to_thread(chunks.cleanup_session, upload_id)
     session.status = "cancelled"
     await db.commit()

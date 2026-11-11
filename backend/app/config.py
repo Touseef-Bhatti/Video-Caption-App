@@ -4,6 +4,7 @@ Nothing here is ever sent to the Flutter client — see routes for the
 explicit allowlist of config exposed via GET /api/config/public.
 """
 from functools import lru_cache
+from typing import Literal
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -23,6 +24,10 @@ class Settings(BaseSettings):
     redis_url: str = "redis://localhost:6379/0"
     celery_broker_url: str = "redis://localhost:6379/0"
     celery_result_backend: str = "redis://localhost:6379/1"
+    # Celery is retained for local Compose; Modal deployments need no Redis.
+    job_backend: Literal["celery", "modal"] = "celery"
+    modal_app_name: str = "video-caption-app"
+    chunk_storage_backend: Literal["local", "object_storage"] = "local"
 
     gemini_api_key: str
     gemini_model: str = "gemini-2.0-flash"

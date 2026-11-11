@@ -1,17 +1,15 @@
-"""
-Filesystem side of resumable/chunked uploads. Chunks are written as
-individual files (chunk_000000, chunk_000001, ...) under a per-session
-directory. This is deliberately simple -- no database row tracks which
-chunks arrived, because the filesystem itself is the source of truth and
-a PUT of the same chunk index twice is naturally idempotent (it just
-overwrites the same file). The UploadSession DB row only tracks the
-session's own metadata (total size, chunk count, owner, status).
+"""Resumable chunks use object storage on Modal and local files in Compose.
+
+Each completed chunk has a deterministic name; retries replace that object.
+The UploadSession row tracks metadata and ownership, while stored chunks
+are the source of truth for resumability across API containers.
 """
 from __future__ import annotations
 import shutil
 from pathlib import Path
 
 from app.config import get_settings
+from services import storage_service
 
 settings = get_settings()
 
@@ -26,7 +24,23 @@ def chunk_path(upload_id: str, chunk_index: int) -> Path:
     return session_dir(upload_id) / f"chunk_{chunk_index:06d}"
 
 
+def chunk_prefix(upload_id: str) -> str:
+    return f"upload-chunks/{upload_id}/"
+
+
+def persist_chunk(upload_id: str, chunk_index: int, local_path: Path) -> None:
+    if settings.chunk_storage_backend == "object_storage":
+        storage_service.upload_file(local_path, chunk_prefix(upload_id) + chunk_path(upload_id, chunk_index).name)
+        local_path.unlink(missing_ok=True)
+    else:
+        local_path.replace(chunk_path(upload_id, chunk_index))
+
+
 def received_chunk_indices(upload_id: str, total_chunks: int) -> set[int]:
+    if settings.chunk_storage_backend == "object_storage":
+        prefix = chunk_prefix(upload_id)
+        keys = set(storage_service.list_keys(prefix))
+        return {i for i in range(total_chunks) if prefix + f"chunk_{i:06d}" in keys}
     d = session_dir(upload_id)
     if not d.exists():
         return set()
@@ -47,6 +61,15 @@ def assemble_chunks(upload_id: str, total_chunks: int, out_path: Path) -> Path:
     with open(out_path, "wb") as out:
         for i in range(total_chunks):
             part = chunk_path(upload_id, i)
+            if settings.chunk_storage_backend == "object_storage":
+                part = out_path.with_suffix(".download")
+                try:
+                    storage_service.download_file(chunk_prefix(upload_id) + f"chunk_{i:06d}", part)
+                    with open(part, "rb") as p:
+                        shutil.copyfileobj(p, out, length=1024 * 1024)
+                finally:
+                    part.unlink(missing_ok=True)
+                continue
             if not part.exists():
                 raise ValueError(f"Missing chunk {i} of {total_chunks}. Please resend it before completing the upload.")
             with open(part, "rb") as p:
@@ -55,4 +78,6 @@ def assemble_chunks(upload_id: str, total_chunks: int, out_path: Path) -> Path:
 
 
 def cleanup_session(upload_id: str) -> None:
+    if settings.chunk_storage_backend == "object_storage":
+        storage_service.delete_prefix(chunk_prefix(upload_id))
     shutil.rmtree(session_dir(upload_id), ignore_errors=True)

@@ -11,6 +11,7 @@ from schemas.schemas import (
     RenderRequest, VideoUploadResponse,
 )
 from workers.tasks import rerender_project_job
+from workers.task_queue import submit_job
 from services.template_catalog import validate_caption_configuration
 from services import gemini_service
 
@@ -178,8 +179,8 @@ async def trigger_render(
     await db.commit()
     await db.refresh(job)
 
-    rerender_project_job.delay(
-        job.id,
+    await submit_job(
+        rerender_project_job, job, db,
         quality,
         (payload.aspect_ratio if payload else "original"),
     )

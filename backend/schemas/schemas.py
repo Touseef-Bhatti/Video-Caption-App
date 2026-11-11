@@ -129,7 +129,8 @@ class StyleOverrides(BaseModel):
     rotation_degrees: float | None = Field(default=None, ge=-30, le=30)
     # Accepted for compatibility with saved projects; the editor no longer exposes this setting.
     emojis_enabled: bool | None = None
-    motion_enabled: bool | None = None
+    motion_enabled: bool | None = False
+    liquid_glass_enabled: bool = False
 
 
 class RenderRequest(BaseModel):

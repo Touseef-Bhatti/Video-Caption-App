@@ -3,5 +3,10 @@
 **/.env.*
 !**/.env.example
 
+# Local Python environments and caches
+.venv*/
+**/__pycache__/
+**/.pytest_cache/
+
 # Flutter web build output (generated locally or by Cloudflare Pages)
 /frontend/build/

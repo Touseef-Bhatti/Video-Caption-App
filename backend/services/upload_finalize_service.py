@@ -16,6 +16,7 @@ from app.config import get_settings
 from models.models import Project, Video, ProcessingJob, JobStatus
 from services import ffmpeg_service, validation_service, storage_service
 from workers.tasks import process_video_job
+from workers.task_queue import submit_job
 
 settings = get_settings()
 
@@ -77,5 +78,5 @@ async def finalize_upload(
     db.add(video)
     await db.commit()
 
-    process_video_job.delay(job.id)
+    await submit_job(process_video_job, job, db)
     return project.id, job.id

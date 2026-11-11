@@ -1,3 +1,6 @@
+import asyncio
+import logging
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -6,7 +9,7 @@ from app.database import get_db
 from app.security import get_current_user_id
 from models.models import ProcessingJob, Project, JobStatus
 from schemas.schemas import JobStatusResponse
-from workers.celery_app import celery_app
+from workers.task_queue import cancel_task
 
 router = APIRouter(prefix="/api/jobs", tags=["jobs"])
 projects_router = APIRouter(prefix="/api/projects", tags=["jobs"])
@@ -37,16 +40,17 @@ async def cancel_job(job_id: str, user_id: str = Depends(get_current_user_id), d
     if job.status in (JobStatus.completed, JobStatus.failed, JobStatus.cancelled):
         raise HTTPException(status_code=400, detail="This job has already finished and can't be cancelled.")
 
-    # Revoke the Celery task if it's already dispatched to a worker. The
-    # worker-side task also checks job.status itself at each stage boundary
-    # (_check_cancelled in workers/tasks.py) so cancellation is honored even
-    # if the revoke signal arrives mid-step rather than between steps.
-    if job.celery_task_id:
-        celery_app.control.revoke(job.celery_task_id, terminate=True)
-
+    # Persist cancellation first; workers also check it at stage boundaries
+    # if the scheduler cannot immediately stop the remote call.
     job.status = JobStatus.cancelled
     job.stage = "Cancelled"
     await db.commit()
+    if job.celery_task_id:
+        try:
+            await asyncio.to_thread(cancel_task, job.celery_task_id)
+        except Exception:
+            # Cooperative cancellation remains effective if the scheduler is down.
+            logging.getLogger(__name__).exception("Could not stop task for job %s", job.id)
     return JobStatusResponse(
         id=job.id, project_id=job.project_id, status=job.status, stage=job.stage,
         progress=job.progress, error=job.error, created_at=job.created_at,

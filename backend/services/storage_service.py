@@ -38,6 +38,25 @@ def delete_file(storage_key: str) -> None:
     _client().delete_object(Bucket=settings.storage_bucket, Key=storage_key)
 
 
+def list_keys(prefix: str) -> list[str]:
+    pages = _client().get_paginator("list_objects_v2").paginate(
+        Bucket=settings.storage_bucket, Prefix=prefix,
+    )
+    return [item["Key"] for page in pages for item in page.get("Contents", [])]
+
+
+def delete_prefix(prefix: str) -> None:
+    client = _client()
+    keys = list_keys(prefix)
+    for start in range(0, len(keys), 1000):
+        result = client.delete_objects(
+            Bucket=settings.storage_bucket,
+            Delete={"Objects": [{"Key": key} for key in keys[start:start + 1000]]},
+        )
+        if result.get("Errors"):
+            raise RuntimeError("Could not remove all temporary upload chunks.")
+
+
 def signed_download_url(
     storage_key: str,
     expires_seconds: int = 3600,
