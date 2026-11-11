@@ -330,6 +330,9 @@ def render_scene(video_path: Path, snapshot: dict, out_path: Path,
                 process.wait()
             if not process.stdin.closed:
                 process.stdin.close()
+    # Release Chromium's raster and GPU memory before decoding the source at
+    # full resolution on Render's 512 MB instance.
+    _scene_runtime.close()
     composite_started = time.perf_counter()
     try:
         with log_path.open("ab") as log:
