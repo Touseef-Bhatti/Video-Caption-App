@@ -232,11 +232,11 @@ def render_scene(video_path: Path, snapshot: dict, out_path: Path,
                  "[glass_alpha]alphaextract,lut=y='if(gte(val,24),255,0)'[glass_mask];"
                  "[sharp][blurred][glass_mask]maskedmerge[glass_video];"
                  "[glass_video][glass_overlay]overlay=0:0:eof_action=repeat:"
-                 "repeatlast=1:shortest=0:format=auto,format=yuv420p[out]")
+                 f"repeatlast=1:shortest=0:format=auto,format=yuv420p,fps={probe.frame_rate}[out]")
     else:
         graph = (f"[0:v]scale={width}:{height}:flags=lanczos,setsar=1,setpts=PTS-STARTPTS[video];{caption_chain}"
                  "[video][caption]overlay=0:0:eof_action=repeat:repeatlast=1:"
-                 "shortest=0:format=auto,format=yuv420p[out]")
+                 f"shortest=0:format=auto,format=yuv420p,fps={probe.frame_rate}[out]")
     overlay_cmd = ["ffmpeg", "-y", "-f", "image2pipe", "-vcodec", "png",
                    "-framerate", str(FPS), "-i", "pipe:0", "-an", "-c:v", "ffv1",
                    "-pix_fmt", "bgra", "-threads", "1", str(overlay_path)]
