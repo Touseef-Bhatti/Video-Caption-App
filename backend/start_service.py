@@ -1,90 +1,70 @@
-"""Run the API and one caption worker together on a single Render service."""
+"""Share one Python process between the API and caption worker on Render Free."""
 
 import os
 import signal
 import subprocess
-import sys
 import threading
 import time
-from urllib.error import URLError
-from urllib.request import urlopen
 
 
-def _wait_for_api(process, stop, port, timeout=90):
-    deadline = time.monotonic() + timeout
-    while not stop.is_set() and time.monotonic() < deadline:
-        if process.poll() is not None:
-            raise RuntimeError("API exited before becoming ready")
-        try:
-            with urlopen(f"http://127.0.0.1:{port}/api/health", timeout=1) as response:
-                if response.status == 200:
-                    return True
-        except (OSError, URLError):
-            pass
-        stop.wait(0.5)
-    if stop.is_set():
-        return False
-    raise RuntimeError("API did not become ready within 90 seconds")
-
-
-def _stop_processes(processes):
-    for process in processes:
-        if process.poll() is None:
-            process.terminate()
-    deadline = time.monotonic() + 20
-    for process in processes:
-        try:
-            process.wait(timeout=max(0, deadline - time.monotonic()))
-        except subprocess.TimeoutExpired:
-            pass
-        # Also clean up FFmpeg/Chromium descendants left by an interrupted job.
-        if os.name == "posix":
-            try:
-                os.killpg(process.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-        elif process.poll() is None:
-            process.kill()
-        process.wait()
-
-
-def main(stop=None):
-    stop = stop if stop is not None else threading.Event()
-    previous_handlers = {}
-    for sig in (signal.SIGTERM, signal.SIGINT):
-        previous_handlers[sig] = signal.signal(sig, lambda *_: stop.set())
-    processes = []
+def main():
+    server = None
+    api_thread = None
+    stopping = threading.Event()
+    api_failed = threading.Event()
     try:
         subprocess.run(["alembic", "upgrade", "head"], check=True)
-        if stop.is_set():
-            return 0
-        port = os.environ.get("PORT", "8000")
-        api = subprocess.Popen([
-            "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", port,
-        ], start_new_session=True)
-        processes.append(api)
-        # Startup recovery must finish before the worker starts consuming jobs.
-        if not _wait_for_api(api, stop, port):
-            return 0
-        worker = subprocess.Popen([
-            sys.executable, "start_worker.py",
-        ], start_new_session=True)
-        processes.append(worker)
-        print("API and single-job caption worker started", flush=True)
-        while not stop.wait(0.5):
-            for name, process in zip(("API", "Caption worker"), processes):
-                code = process.poll()
-                if code is not None:
-                    print(f"{name} exited with code {code}; stopping service", flush=True)
-                    return code if code > 0 else 1
-        return 0
-    except (OSError, RuntimeError, subprocess.CalledProcessError) as exc:
-        print(f"Service startup failed: {exc}", flush=True)
+        import uvicorn
+        from start_worker import main as run_worker
+
+        server = uvicorn.Server(uvicorn.Config(
+            "app.main:app", host="0.0.0.0",
+            port=int(os.environ.get("PORT", "8000")), loop="asyncio",
+        ))
+
+        def run_api():
+            try:
+                server.run()
+            except Exception as exc:
+                print(f"API failed: {exc}", flush=True)
+                api_failed.set()
+
+        api_thread = threading.Thread(target=run_api, name="caption-api", daemon=True)
+        api_thread.start()
+        deadline = time.monotonic() + 90
+        while not server.started:
+            if not api_thread.is_alive():
+                raise RuntimeError("API exited before becoming ready")
+            if time.monotonic() >= deadline:
+                raise RuntimeError("API did not become ready within 90 seconds")
+            time.sleep(0.1)
+
+        def watch_api():
+            while not stopping.wait(0.5):
+                if not api_thread.is_alive():
+                    api_failed.set()
+                    # Celery owns the main thread and handles graceful shutdown.
+                    os.kill(os.getpid(), signal.SIGTERM)
+                    return
+
+        threading.Thread(target=watch_api, name="caption-api-monitor", daemon=True).start()
+        print("API ready; starting caption worker in the shared process", flush=True)
+        run_worker()
+        return 1 if api_failed.is_set() else 0
+    except SystemExit as exc:
+        return exc.code if isinstance(exc.code, int) else 1
+    except Exception as exc:
+        print(f"Service failed: {exc}", flush=True)
         return 1
     finally:
-        _stop_processes(processes)
-        for sig, handler in previous_handlers.items():
-            signal.signal(sig, handler)
+        stopping.set()
+        if server is not None:
+            server.should_exit = True
+        if api_thread is not None:
+            api_thread.join(timeout=20)
+            if api_thread.is_alive():
+                server.force_exit = True
+                api_thread.join(timeout=2)
 
 
 if __name__ == "__main__":
