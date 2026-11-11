@@ -77,14 +77,16 @@ class _SceneRuntime:
         self.page.on("requestfailed", lambda request: logger.error(
             "Caption renderer request failed: %s (%s)", request.url, request.failure))
         # Transcript data stays local; no CDN/font/network requests are allowed.
-        bundled_roboto = assets / "assets" / "fonts" / "Roboto-Variable.ttf"
+        bundled_roboto = next(assets.rglob("Roboto-Variable.ttf"), None)
 
         def fulfill_local_font(route):
             request_url = urlparse(route.request.url)
             if (request_url.hostname == "fonts.gstatic.com"
                     and request_url.path.startswith("/s/roboto/")):
-                if not bundled_roboto.is_file():
-                    raise RuntimeError("Bundled Roboto font is missing from the renderer image.")
+                if bundled_roboto is None or not bundled_roboto.is_file():
+                    logger.error("Bundled Roboto font is missing from the renderer image.")
+                    route.abort()
+                    return
                 route.fulfill(path=str(bundled_roboto), content_type="font/ttf")
             elif route.request.url.startswith(self.origin + "/"):
                 route.continue_()
