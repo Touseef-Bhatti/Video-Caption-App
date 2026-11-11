@@ -188,7 +188,7 @@ class CaptionScene extends StatelessWidget {
       final basePanelContent = ConstrainedBox(
         constraints: BoxConstraints(maxWidth: designWidth * 0.88),
         child: Container(
-          padding: const EdgeInsets.symmetric(
+          padding: EdgeInsets.symmetric(
               horizontal: 12 * unit, vertical: 7 * unit),
           decoration: BoxDecoration(
             color: overrides.backgroundColor != null
