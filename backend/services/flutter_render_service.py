@@ -69,6 +69,12 @@ class _SceneRuntime:
         self.page = self.browser.new_page(
             viewport={"width": width, "height": height}, device_scale_factor=1
         )
+        self.page.on("pageerror", lambda error: logger.error("Caption renderer JavaScript error: %s", error))
+        self.page.on("console", lambda message: logger.error("Caption renderer console: %s", message.text)
+                     if message.type == "error" else None)
+        self.page.on("crash", lambda _: logger.error("Caption renderer page crashed"))
+        self.page.on("requestfailed", lambda request: logger.error(
+            "Caption renderer request failed: %s (%s)", request.url, request.failure))
         # Transcript data stays local; no CDN/font/network requests are allowed.
         self.page.route(
             "**/*",
@@ -371,3 +377,4 @@ def render_scene(video_path: Path, snapshot: dict, out_path: Path,
         total_seconds,
     )
     return out_path
+
