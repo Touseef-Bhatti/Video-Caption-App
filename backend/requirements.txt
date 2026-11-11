@@ -12,6 +12,8 @@ python-dotenv==1.0.1
 aiofiles==24.1.0
 httpx==0.27.2
 celery[redis]==5.4.0
+# Pin the Redis transport to match Celery 5.4 and redis-py 5.x.
+kombu==5.4.2
 redis==5.0.8
 python-jose[cryptography]==3.3.0
 passlib[bcrypt]==1.7.4
