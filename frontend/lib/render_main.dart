@@ -83,7 +83,9 @@ class _RendererState extends State<_Renderer> {
         presetId: scene!['style_preset'] as String,
         overrides: StyleOverrides.fromJson(scene!['style_overrides'] as Map<String, dynamic>?),
         time: time,
+        canvasScale: (scene!['canvas_scale'] as num?)?.toDouble() ?? 1,
       ),
     ),
   );
 }
+

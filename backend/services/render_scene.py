@@ -2,8 +2,8 @@
 import hashlib
 import json
 
-RENDERER_VERSION = "flutter-scene-v7"
-FPS = 30
+RENDERER_VERSION = "flutter-scene-v8"
+FPS = 15
 
 
 def caption_snapshot(caption, aspect_ratio=None):
@@ -20,3 +20,4 @@ def caption_snapshot(caption, aspect_ratio=None):
 def fingerprint(snapshot):
     return hashlib.sha256(json.dumps(snapshot, sort_keys=True, separators=(",", ":"),
                                      ensure_ascii=False).encode()).hexdigest()
+

@@ -443,7 +443,8 @@ class StyleOverrides {
     this.positionY,
     this.scale = 1,
     this.rotationDegrees = 0,
-    this.motionEnabled = true,
+    this.motionEnabled = false,
+    this.liquidGlassEnabled = false,
   });
 
   final String? primaryColor;
@@ -462,6 +463,7 @@ class StyleOverrides {
   final double scale;
   final double rotationDegrees;
   final bool motionEnabled;
+  final bool liquidGlassEnabled;
 
   StyleOverrides copyWith({
     String? primaryColor,
@@ -481,6 +483,7 @@ class StyleOverrides {
     double? scale,
     double? rotationDegrees,
     bool? motionEnabled,
+    bool? liquidGlassEnabled,
   }) =>
       StyleOverrides(
         primaryColor: primaryColor ?? this.primaryColor,
@@ -499,6 +502,7 @@ class StyleOverrides {
         scale: scale ?? this.scale,
         rotationDegrees: rotationDegrees ?? this.rotationDegrees,
         motionEnabled: motionEnabled ?? this.motionEnabled,
+        liquidGlassEnabled: liquidGlassEnabled ?? this.liquidGlassEnabled,
       );
 
   factory StyleOverrides.fromJson(Map<String, dynamic>? json) {
@@ -519,7 +523,8 @@ class StyleOverrides {
       positionY: (json['position_y'] as num?)?.toDouble(),
       scale: (json['scale'] as num?)?.toDouble() ?? 1,
       rotationDegrees: (json['rotation_degrees'] as num?)?.toDouble() ?? 0,
-      motionEnabled: json['motion_enabled'] as bool? ?? true,
+      motionEnabled: json['motion_enabled'] as bool? ?? false,
+      liquidGlassEnabled: json['liquid_glass_enabled'] as bool? ?? false,
     );
   }
 
@@ -540,6 +545,7 @@ class StyleOverrides {
         if (scale != 1) 'scale': scale,
         if (rotationDegrees != 0) 'rotation_degrees': rotationDegrees,
         'motion_enabled': motionEnabled,
+        'liquid_glass_enabled': liquidGlassEnabled,
       };
 }
 
@@ -837,3 +843,4 @@ CaptionPresetInfo presetInfoFor(String id) {
   return kCaptionPresets.firstWhere((p) => p.id == resolved,
       orElse: () => kCaptionPresets.first);
 }
+

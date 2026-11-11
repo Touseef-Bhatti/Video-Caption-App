@@ -2546,6 +2546,14 @@ class _ControlsPane extends ConsumerWidget {
                           : notifier
                               .setStyleOverrides(o.copyWith(motionEnabled: v)),
                     ),
+                    if (selectedPreset.id == 'liquid_glass')
+                      SwitchListTile(
+                        contentPadding: EdgeInsets.zero,
+                        title: const Text('Liquid glass effect'),
+                        value: o.liquidGlassEnabled,
+                        onChanged: (v) => notifier.setStyleOverrides(
+                            o.copyWith(liquidGlassEnabled: v)),
+                      ),
                     Text('Caption scale', style: theme.textTheme.titleSmall),
                     Slider(
                       min: 0.5,
@@ -3263,3 +3271,4 @@ class _EditorSectionHeading extends StatelessWidget {
     );
   }
 }
+

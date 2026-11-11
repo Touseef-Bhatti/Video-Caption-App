@@ -21,6 +21,7 @@ import shlex
 import subprocess
 import threading
 import time
+from urllib.parse import urlparse
 
 from services.ffmpeg_service import QUALITY_PRESETS, output_dimensions, probe_video
 from services.render_scene import FPS, RENDERER_VERSION
@@ -76,11 +77,21 @@ class _SceneRuntime:
         self.page.on("requestfailed", lambda request: logger.error(
             "Caption renderer request failed: %s (%s)", request.url, request.failure))
         # Transcript data stays local; no CDN/font/network requests are allowed.
-        self.page.route(
-            "**/*",
-            lambda route: route.continue_()
-            if route.request.url.startswith(self.origin + "/") else route.abort(),
-        )
+        bundled_roboto = assets / "assets" / "fonts" / "Roboto-Variable.ttf"
+
+        def fulfill_local_font(route):
+            request_url = urlparse(route.request.url)
+            if (request_url.hostname == "fonts.gstatic.com"
+                    and request_url.path.startswith("/s/roboto/")):
+                if not bundled_roboto.is_file():
+                    raise RuntimeError("Bundled Roboto font is missing from the renderer image.")
+                route.fulfill(path=str(bundled_roboto), content_type="font/ttf")
+            elif route.request.url.startswith(self.origin + "/"):
+                route.continue_()
+            else:
+                route.abort()
+
+        self.page.route("**/*", fulfill_local_font)
         self.page.goto(self.origin, wait_until="load")
         self.page.wait_for_function("window.captionReady === true", timeout=60000)
 
@@ -128,10 +139,12 @@ def scene_browser(width, height):
         yield page
 
 
-def load_scene(page, snapshot):
+def load_scene(page, snapshot, canvas_scale=1.0):
     if snapshot.get("renderer_version") != RENDERER_VERSION:
         raise ValueError("Caption renderer version changed. Please render again.")
-    page.evaluate("scene => window.captionLoad(scene)", json.dumps(snapshot, ensure_ascii=False))
+    render_snapshot = dict(snapshot)
+    render_snapshot["canvas_scale"] = canvas_scale
+    page.evaluate("scene => window.captionLoad(scene)", json.dumps(render_snapshot, ensure_ascii=False))
 
 
 def capture_frame(page, time):
@@ -189,39 +202,48 @@ def _sanitized_command(cmd: list[str], video_path: Path, out_path: Path) -> list
     ]
 
 
+def _overlay_dimensions(width: int, height: int, maximum: int = 720) -> tuple[int, int]:
+    """Fit the transparent caption layer inside 720p without enlarging it."""
+    scale = min(1.0, maximum / max(width, height))
+    return max(2, int(width * scale) // 2 * 2), max(2, int(height * scale) // 2 * 2)
+
+
 def render_scene(video_path: Path, snapshot: dict, out_path: Path,
                  quality="standard", progress=None, probe=None,
                  encoder_preset=None, encoder_crf=None,
                  metrics: dict | None = None) -> Path:
     probe = probe or probe_video(video_path)
     width, height = output_dimensions(probe.width, probe.height, snapshot["aspect_ratio"])
+    overlay_width, overlay_height = _overlay_dimensions(width, height)
     q = QUALITY_PRESETS.get(quality, QUALITY_PRESETS["standard"])
     preset = encoder_preset or q["preset"]
     crf = encoder_crf or q["crf"]
     count = max(1, math.ceil(probe.duration_seconds * FPS))
-    # Always normalize source pixels and contain/pad before compositing. Caption
-    # coordinates are in the output canvas, including its letterboxing.
-    video_chain = (f"[0:v]scale=trunc(iw*sar/2)*2:ih,setsar=1,scale={width}:{height}:force_original_aspect_ratio=decrease:"
-                   f"force_divisible_by=2,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,"
-                   f"setsar=1,fps={FPS},setpts=PTS-STARTPTS[video];")
-    if snapshot["style_preset"] == "liquid_glass":
-        graph = (video_chain +
+    overlay_path = out_path.with_name(out_path.stem + ".caption-overlay.mkv")
+    caption_chain = f"[1:v]scale={width}:{height}:flags=lanczos,format=rgba[caption];"
+    if (snapshot["style_preset"] == "liquid_glass"
+            and snapshot.get("style_overrides", {}).get("liquid_glass_enabled", False)):
+        graph = (f"[0:v]scale={width}:{height}:flags=lanczos,setsar=1,setpts=PTS-STARTPTS[video];{caption_chain}"
                  "[video]split[sharp][blur_source];"
                  "[blur_source]boxblur=16:1[blurred];"
-                 "[1:v]split[glass_overlay][glass_alpha];"
+                 "[caption]split[glass_overlay][glass_alpha];"
                  "[glass_alpha]alphaextract,lut=y='if(gte(val,24),255,0)'[glass_mask];"
                  "[sharp][blurred][glass_mask]maskedmerge[glass_video];"
-                 "[glass_video][glass_overlay]overlay=0:0:format=auto:shortest=1,format=yuv420p[out]")
+                 "[glass_video][glass_overlay]overlay=0:0:eof_action=repeat:"
+                 "repeatlast=1:shortest=0:format=auto,format=yuv420p[out]")
     else:
-        graph = (video_chain +
-                 "[video][1:v]overlay=0:0:format=auto:shortest=1,format=yuv420p[out]")
-    # Keep scaling/compositing parallel without creating an unbounded thread pool.
-    cmd = ["ffmpeg", "-y", "-i", str(video_path), "-f", "image2pipe", "-vcodec", "png",
-           "-framerate", str(FPS), "-i", "pipe:0", "-filter_complex_threads", "2",
-           "-filter_complex", graph, "-map", "[out]", "-map", "0:a?",
-           "-c:v", "libx264", "-preset", preset, "-crf", crf,
-           "-c:a", "aac", "-b:a", "128k", "-t", str(probe.duration_seconds),
-           "-movflags", "+faststart", str(out_path)]
+        graph = (f"[0:v]scale={width}:{height}:flags=lanczos,setsar=1,setpts=PTS-STARTPTS[video];{caption_chain}"
+                 "[video][caption]overlay=0:0:eof_action=repeat:repeatlast=1:"
+                 "shortest=0:format=auto,format=yuv420p[out]")
+    overlay_cmd = ["ffmpeg", "-y", "-f", "image2pipe", "-vcodec", "png",
+                   "-framerate", str(FPS), "-i", "pipe:0", "-an", "-c:v", "ffv1",
+                   "-pix_fmt", "bgra", "-threads", "1", str(overlay_path)]
+    cmd = ["ffmpeg", "-y", "-threads", "1", "-i", str(video_path), "-i", str(overlay_path),
+           "-filter_complex_threads", "1", "-filter_complex", graph, "-map", "[out]",
+           "-map", "0:a?", "-fps_mode", "passthrough", "-c:v", "libx264",
+           "-preset", preset, "-crf", crf, "-threads", "1", "-c:a", "aac",
+           "-b:a", "128k", "-t", str(probe.duration_seconds), "-movflags", "+faststart",
+           str(out_path)]
     sanitized_cmd = _sanitized_command(cmd, video_path, out_path)
     if metrics is not None:
         metrics.update({
@@ -240,24 +262,27 @@ def render_scene(video_path: Path, snapshot: dict, out_path: Path,
                 "bit_rate": probe.bit_rate,
                 "audio_codec": probe.audio_codec,
             },
-            "output": {"width": width, "height": height},
+            "output": {"width": width, "height": height,
+                       "frame_rate": probe.frame_rate},
+            "caption_overlay": {"width": overlay_width, "height": overlay_height,
+                                "frame_rate": FPS, "codec": "ffv1", "alpha": True},
             "workload": {
                 "frames": count,
                 "fps": FPS,
-                "pixels_per_frame": width * height,
-                "total_overlay_pixels": width * height * count,
+                "pixels_per_frame": overlay_width * overlay_height,
+                "total_overlay_pixels": overlay_width * overlay_height * count,
             },
             "ffmpeg": {
                 "command": sanitized_cmd,
                 "command_text": shlex.join(sanitized_cmd),
                 "filter_graph": graph,
-                "filter_complex_threads": 2,
-                "overlay_input_format": "image2pipe/png/rgba",
+                "filter_complex_threads": 1,
+                "overlay_input_format": "ffv1/matroska/bgra",
                 "video_codec": "libx264",
                 "preset": preset,
                 "crf": crf,
                 "pixel_format": "yuv420p",
-                "encoder_threads": "auto",
+                "encoder_threads": 1,
                 "audio_codec": "aac",
                 "audio_bitrate": "128k",
                 "movflags": "+faststart",
@@ -267,13 +292,13 @@ def render_scene(video_path: Path, snapshot: dict, out_path: Path,
     browser_started = time.perf_counter()
     log_path = out_path.parent / "render.log"
     return_code = None
-    with scene_browser(width, height) as page, log_path.open("wb") as log:
+    with scene_browser(overlay_width, overlay_height) as page, log_path.open("wb") as log:
         browser_ready_seconds = time.perf_counter() - browser_started
         scene_started = time.perf_counter()
-        load_scene(page, snapshot)
+        load_scene(page, snapshot, overlay_width / width)
         scene_load_seconds = time.perf_counter() - scene_started
         ffmpeg_started = time.perf_counter()
-        process = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=log)
+        process = subprocess.Popen(overlay_cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=log)
         ffmpeg_start_seconds = time.perf_counter() - ffmpeg_started
         capture_seconds = 0.0
         pipe_write_seconds = 0.0
@@ -283,7 +308,7 @@ def render_scene(video_path: Path, snapshot: dict, out_path: Path,
             for start in range(count):
                 batch_count = 1
                 if progress and start - last_progress_frame >= FPS:
-                    progress(start / count)
+                    progress(start / count * 0.82)
                     last_progress_frame = start
                 capture_started = time.perf_counter()
                 frames = capture_frames(page, start, batch_count)
@@ -295,7 +320,7 @@ def render_scene(video_path: Path, snapshot: dict, out_path: Path,
                     pipe_write_seconds += time.perf_counter() - write_started
             process.stdin.close()
             drain_started = time.perf_counter()
-            return_code = process.wait(timeout=120)
+            return_code = process.wait(timeout=max(120, probe.duration_seconds * 2))
             encoder_drain_seconds = time.perf_counter() - drain_started
             if return_code != 0:
                 raise RuntimeError("Video encoding failed; see the worker render log.")
@@ -305,6 +330,23 @@ def render_scene(video_path: Path, snapshot: dict, out_path: Path,
                 process.wait()
             if not process.stdin.closed:
                 process.stdin.close()
+    composite_started = time.perf_counter()
+    try:
+        with log_path.open("ab") as log:
+            composite_result = subprocess.run(
+                cmd, stdout=subprocess.DEVNULL, stderr=log,
+                timeout=max(180, probe.duration_seconds * 3),
+            )
+        if composite_result.returncode != 0:
+            raise RuntimeError("Video compositing failed; see the worker render log.")
+    finally:
+        try:
+            overlay_path.unlink(missing_ok=True)
+        except OSError:
+            logger.warning("Could not remove temporary caption overlay: %s", overlay_path.name)
+    composite_seconds = time.perf_counter() - composite_started
+    if progress:
+        progress(0.98)
     if not out_path.is_file() or out_path.stat().st_size <= 0:
         raise RuntimeError("Video encoding produced no output file.")
     output_bytes = out_path.stat().st_size
@@ -317,6 +359,9 @@ def render_scene(video_path: Path, snapshot: dict, out_path: Path,
         raise RuntimeError("Rendered video duration did not match the source video.")
     if output_probe.has_audio != probe.has_audio:
         raise RuntimeError("Rendered video audio track did not match the source video.")
+    if (probe.frame_rate and output_probe.frame_rate
+            and abs(output_probe.frame_rate - probe.frame_rate) > max(0.02, probe.frame_rate * 0.005)):
+        raise RuntimeError("Rendered video frame rate did not match the source video.")
     total_seconds = time.perf_counter() - render_started
     phases = {
         "browser_ready": browser_ready_seconds,
@@ -325,6 +370,7 @@ def render_scene(video_path: Path, snapshot: dict, out_path: Path,
         "frame_capture": capture_seconds,
         "pipe_write": pipe_write_seconds,
         "encoder_drain": encoder_drain_seconds,
+        "full_resolution_composite": composite_seconds,
         "output_probe": output_probe_seconds,
     }
     accounted_seconds = sum(phases.values())
@@ -357,7 +403,7 @@ def render_scene(video_path: Path, snapshot: dict, out_path: Path,
                 "pipe_write_percent": round(pipe_write_seconds / max(total_seconds, 0.000001) * 100, 2),
                 "encoder_drain_percent": round(encoder_drain_seconds / max(total_seconds, 0.000001) * 100, 2),
                 "overlay_megapixels_per_second": round(
-                    width * height * count / max(capture_seconds, 0.000001) / 1_000_000, 3
+                    overlay_width * overlay_height * count / max(capture_seconds, 0.000001) / 1_000_000, 3
                 ),
                 "png_pipe_bytes": pipe_bytes,
                 "average_png_bytes_per_frame": round(pipe_bytes / count, 3),
