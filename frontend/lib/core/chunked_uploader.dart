@@ -129,6 +129,7 @@ class ChunkedUploader {
 
   static const _prefsKey = 'chunked_upload_pending_v1';
   static const maxAttemptsPerChunk = 5;
+  static const maxParallelChunks = 3;
 
   final _progress = StreamController<ChunkedUploadProgress>.broadcast();
   Stream<ChunkedUploadProgress> get progress => _progress.stream;
@@ -137,7 +138,7 @@ class ChunkedUploader {
   ChunkedUploadProgress get state => _state;
 
   bool _cancelRequested = false;
-  CancelToken? _inFlight;
+  final Set<CancelToken> _inFlight = {};
 
   void _emit(ChunkedUploadProgress s) {
     _state = s;
@@ -230,7 +231,9 @@ class ChunkedUploader {
 
   Future<void> cancel() async {
     _cancelRequested = true;
-    _inFlight?.cancel('cancelled by user');
+    for (final token in _inFlight.toList()) {
+      token.cancel('cancelled by user');
+    }
     final id = _state.uploadId;
     if (id != null) {
       try {
@@ -299,29 +302,49 @@ class ChunkedUploader {
         totalBytes: p.totalSize,
       ));
 
-      for (var i = 0; i < p.totalChunks; i++) {
-        if (_cancelRequested) throw UploadCancelledException();
-        if (received.contains(i)) continue;
-
-        final Uint8List data;
-        try {
-          data = await source.readChunk(i * p.chunkSize, p.chunkSize);
-        } catch (_) {
+      final missing = <int>[
+        for (var i = 0; i < p.totalChunks; i++)
+          if (!received.contains(i)) i,
+      ];
+      var next = 0;
+      var sourceUnavailable = false;
+      Future<void> uploadWorker() async {
+        while (true) {
+          if (_cancelRequested) throw UploadCancelledException();
+          if (sourceUnavailable) return;
+          if (next >= missing.length) return;
+          final i = missing[next++];
+          final Uint8List data;
+          try {
+            data = await source.readChunk(i * p.chunkSize, p.chunkSize);
+          } catch (_) {
+            sourceUnavailable = true;
+            throw ApiException(message: 'The original file is no longer available. Please select it again to continue.');
+          }
+          await _putChunkWithRetry(p, i, data);
+          received.add(i);
+          bytesDone += data.length;
+          _emit(ChunkedUploadProgress(
+            status: ChunkedUploadStatus.uploading,
+            uploadId: p.uploadId,
+            uploadedChunks: received.length,
+            totalChunks: p.totalChunks,
+            bytesUploaded: bytesDone,
+            totalBytes: p.totalSize,
+          ));
+        }
+      }
+      try {
+        await Future.wait(List.generate(
+          maxParallelChunks < missing.length ? maxParallelChunks : missing.length,
+          (_) => uploadWorker(),
+        ));
+      } on ApiException {
+        if (sourceUnavailable) {
           return _fail(p, 'The original file is no longer available. Please select it again to continue.',
               needsReselect: true);
         }
-        await _putChunkWithRetry(p, i, data);
-
-        received.add(i);
-        bytesDone += data.length;
-        _emit(ChunkedUploadProgress(
-          status: ChunkedUploadStatus.uploading,
-          uploadId: p.uploadId,
-          uploadedChunks: received.length,
-          totalChunks: p.totalChunks,
-          bytesUploaded: bytesDone,
-          totalBytes: p.totalSize,
-        ));
+        rethrow;
       }
 
       if (_cancelRequested) throw UploadCancelledException();
@@ -386,7 +409,8 @@ class ChunkedUploader {
     var attempt = 0;
     while (true) {
       if (_cancelRequested) throw UploadCancelledException();
-      _inFlight = CancelToken();
+      final token = CancelToken();
+      _inFlight.add(token);
       try {
         await _api.dio.put(
           '/api/uploads/${p.uploadId}/chunks/$index',
@@ -394,7 +418,7 @@ class ChunkedUploader {
           options: Options(headers: {
             Headers.contentTypeHeader: 'application/octet-stream',
           }),
-          cancelToken: _inFlight,
+          cancelToken: token,
         );
         return;
       } on DioException catch (e) {
@@ -422,6 +446,8 @@ class ChunkedUploader {
         ));
         final backoff = Duration(seconds: (1 << (attempt - 1)).clamp(1, 30));
         await Future<void>.delayed(backoff);
+      } finally {
+        _inFlight.remove(token);
       }
     }
   }

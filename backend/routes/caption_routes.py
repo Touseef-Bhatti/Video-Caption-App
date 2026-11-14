@@ -1,3 +1,6 @@
+import asyncio
+import logging
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -11,7 +14,7 @@ from schemas.schemas import (
     RenderRequest, VideoUploadResponse,
 )
 from workers.tasks import rerender_project_job
-from workers.task_queue import submit_job
+from workers.task_queue import cancel_task, submit_job
 from services.template_catalog import validate_caption_configuration
 from services import gemini_service
 
@@ -151,19 +154,29 @@ async def trigger_render(
     caption.caption_data = caption_data
     caption.style_overrides = style_overrides
 
-    aspect_ratio = payload.aspect_ratio if payload else caption.aspect_ratio
+    aspect_ratio = (payload.aspect_ratio if payload and payload.aspect_ratio
+                    else caption.aspect_ratio)
     caption.aspect_ratio = aspect_ratio
     quality = payload.quality if payload else "standard"
     snapshot = caption_snapshot(caption, aspect_ratio)
     snapshot_fingerprint = fingerprint(snapshot)
+    output_resolution = payload.output_resolution if payload else 0
+    output_fps = payload.output_fps if payload else 0
+    output_options = {
+        "quality": quality,
+        "output_resolution": output_resolution,
+        "output_fps": output_fps,
+    }
 
-    # An unchanged scene at the same quality already has byte-identical render
-    # inputs. Reuse its completed export instead of queueing another encode.
+    # Reuse finished output before applying the active-render quota. This lets
+    # users download a cached format without consuming another render slot.
     existing_export = await db.scalar(
         select(Export).where(
             Export.project_id == project.id,
             Export.render_fingerprint == snapshot_fingerprint,
             Export.quality == quality,
+            Export.output_resolution == output_resolution,
+            Export.output_fps == output_fps,
             Export.job_id.is_not(None),
         ).order_by(Export.created_at.desc())
     )
@@ -172,16 +185,62 @@ async def trigger_render(
         if existing_job and existing_job.status == JobStatus.completed:
             return VideoUploadResponse(project_id=project.id, job_id=existing_job.id)
 
+    # Keep one active render per user. Repeated requests for the same profile
+    # attach to the existing job; a different request replaces it.
+    active_job = await db.scalar(
+        select(ProcessingJob)
+        .join(Project, ProcessingJob.project_id == Project.id)
+        .where(
+            Project.user_id == user_id,
+            ProcessingJob.render_snapshot.is_not(None),
+            ProcessingJob.status.in_([
+                JobStatus.queued, JobStatus.preparing,
+                JobStatus.rendering, JobStatus.finalizing,
+            ]),
+        )
+        .order_by(ProcessingJob.created_at.desc())
+    )
+    if active_job:
+        active_options = (active_job.render_snapshot or {}).get("export_options")
+        same_request = (
+            active_job.project_id == project.id
+            and active_options == output_options
+            and fingerprint({key: value for key, value in (active_job.render_snapshot or {}).items()
+                             if key != "export_options"}) == snapshot_fingerprint
+        )
+        if same_request:
+            return VideoUploadResponse(project_id=project.id, job_id=active_job.id)
+
+        # Persist cancellation first so the worker's cooperative checks stop
+        # it even if the scheduler call is briefly unavailable.
+        active_job.status = JobStatus.cancelled
+        active_job.stage = "Replaced by a newer render"
+        await db.commit()
+        if active_job.celery_task_id:
+            try:
+                await asyncio.to_thread(cancel_task, active_job.celery_task_id)
+            except Exception as exc:
+                logging.getLogger(__name__).exception(
+                    "Could not stop replaced render %s", active_job.id
+                )
+                raise HTTPException(
+                    status_code=503,
+                    detail="The previous render could not be stopped yet. Please try again shortly.",
+                ) from exc
+
+    render_snapshot = {
+        **snapshot,
+        "export_options": output_options,
+    }
     job = ProcessingJob(project_id=project.id, status=JobStatus.queued, stage="Queued", progress=0,
-                        render_snapshot=snapshot)
+                        render_snapshot=render_snapshot)
     db.add(job)
     project.status = "processing"
     await db.commit()
     await db.refresh(job)
 
-    await submit_job(
-        rerender_project_job, job, db,
-        quality,
-        (payload.aspect_ratio if payload else "original"),
-    )
+    render_arguments = [quality, aspect_ratio]
+    if output_resolution != 0 or output_fps != 0:
+        render_arguments.extend([output_resolution, output_fps])
+    await submit_job(rerender_project_job, job, db, *render_arguments)
     return VideoUploadResponse(project_id=project.id, job_id=job.id)

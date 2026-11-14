@@ -5,7 +5,7 @@ import 'api_exception.dart';
 import 'storage/token_storage.dart';
 
 /// The backend base URL. Passed at build/run time:
-///   flutter run --dart-define=API_BASE_URL=http://localhost:8000
+///   flutter run --dart-define=API_BASE_URL=http://localhost:9001
 /// Never hardcoded to a production value and never reads GEMINI_API_KEY or
 /// any backend secret -- those live only on the server (section 20/53).
 const String _apiBaseUrlOverride = String.fromEnvironment('API_BASE_URL');

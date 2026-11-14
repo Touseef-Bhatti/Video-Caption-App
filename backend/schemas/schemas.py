@@ -136,7 +136,9 @@ class StyleOverrides(BaseModel):
 class RenderRequest(BaseModel):
     """Optional body for POST /api/projects/{id}/render."""
     quality: Literal["standard", "high"] = "standard"
-    aspect_ratio: Literal["original", "9:16", "1:1", "4:5", "16:9"] = "original"
+    aspect_ratio: Literal["original", "9:16", "1:1", "4:5", "16:9"] | None = None
+    output_resolution: Literal[0, 720, 1024, 2048, 3840] = 0
+    output_fps: Literal[0, 30, 60, 120] = 0
 
 
 class CaptionUpdateRequest(BaseModel):

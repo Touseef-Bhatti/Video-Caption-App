@@ -112,6 +112,8 @@ class Export(Base):
     project_id: Mapped[str] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True)
     storage_key: Mapped[str] = mapped_column(String(1000))
     quality: Mapped[str] = mapped_column(String(50), default="standard")
+    output_resolution: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    output_fps: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     render_fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True)
     job_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)

@@ -1,0 +1,24 @@
+services:
+  backend:
+    environment:
+      # Modal workers must see the same database rows created by the local API.
+      DATABASE_URL: ${DATABASE_URL:?Set DATABASE_URL in backend/.env}
+      JOB_BACKEND: modal
+      MODAL_APP_NAME: ${MODAL_APP_NAME:-video-caption-app}
+    command: >
+      gunicorn app.main:app -k uvicorn.workers.UvicornWorker
+      --bind 0.0.0.0:8000 --workers 2 --timeout 120
+    volumes:
+      - type: bind
+        source: ${USERPROFILE}/.modal.toml
+        target: /root/.modal.toml
+        read_only: true
+
+  worker:
+    profiles: [celery-local]
+
+  render_worker:
+    profiles: [celery-local]
+
+  beat:
+    profiles: [celery-local]

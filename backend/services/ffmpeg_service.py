@@ -397,11 +397,17 @@ OUTPUT_DIMENSIONS = {
 }
 
 
-def output_dimensions(width: int, height: int, aspect_ratio: str = "original") -> tuple[int, int]:
-    """Return a common delivery canvas, or the source dimensions unchanged."""
-    if aspect_ratio in OUTPUT_DIMENSIONS:
-        return OUTPUT_DIMENSIONS[aspect_ratio]
-    return width - (width % 2), height - (height % 2)
+def output_dimensions(width: int, height: int, aspect_ratio: str = "original",
+                      max_dimension: int = 0) -> tuple[int, int]:
+    """Fit the chosen aspect ratio inside a bounded square output canvas."""
+    base_width, base_height = OUTPUT_DIMENSIONS.get(aspect_ratio, (width, height))
+    if max_dimension <= 0:
+        return width, height
+    scale = (max_dimension / max(base_width, base_height)
+             if max_dimension > 0 else 1.0)
+    out_width = max(2, int(base_width * scale) // 2 * 2)
+    out_height = max(2, int(base_height * scale) // 2 * 2)
+    return out_width, out_height
 
 
 QUALITY_PRESETS = {

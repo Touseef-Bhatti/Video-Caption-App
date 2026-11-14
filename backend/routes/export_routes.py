@@ -22,7 +22,8 @@ async def list_exports(project_id: str, user_id: str = Depends(get_current_user_
     )).all()
     return [
         {"id": e.id, "quality": e.quality, "created_at": e.created_at.isoformat(),
-         "job_id": e.job_id, "render_fingerprint": e.render_fingerprint}
+         "job_id": e.job_id, "render_fingerprint": e.render_fingerprint,
+         "output_resolution": e.output_resolution, "output_fps": e.output_fps}
         for e in exports
     ]
 

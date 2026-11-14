@@ -1,5 +1,6 @@
 """Dispatch existing pipeline functions through Modal or local Celery."""
 from functools import update_wrapper
+import os
 from types import SimpleNamespace
 
 from app.config import get_settings
@@ -16,6 +17,24 @@ class ModalTask:
         import modal
 
         function = modal.Function.from_name(get_settings().modal_app_name, self.name)
+        if self.name == "rerender_project_job" and len(args) >= 5:
+            resolution, fps = int(args[3]), int(args[4])
+            gpu_policy = os.environ.get("MODAL_RENDER_GPU", "auto").lower()
+            if gpu_policy == "none":
+                gpu = None
+            elif gpu_policy != "auto":
+                gpu = os.environ["MODAL_RENDER_GPU"]
+            elif resolution <= 1024 and fps <= 30:
+                gpu = ["T4", "L4", "A10"]
+            elif resolution <= 2048 and fps <= 60:
+                gpu = ["L4", "A10", "T4"]
+            else:
+                # High profiles can still run on T4 when preferred GPUs are
+                # saturated. It may take longer, but gives Modal another
+                # compatible GPU type to schedule instead of waiting only on
+                # A10/L4 capacity.
+                gpu = ["A10", "L4", "T4"]
+            function = function.with_options(gpu=gpu, max_containers=1)
         call = function.spawn(*args, **kwargs)
         return SimpleNamespace(id=call.object_id)
 
@@ -31,12 +50,12 @@ class ModalTask:
     __call__ = run
 
 
-def task(*, name, bind=False):
+def task(*, name, bind=False, queue=None):
     if get_settings().job_backend == "modal":
         return lambda function: ModalTask(function, name=name, bind=bind)
     from workers.celery_app import celery_app
 
-    return celery_app.task(name=name, bind=bind)
+    return celery_app.task(name=name, bind=bind, queue=queue)
 
 
 async def submit_job(task, job, db, *args):

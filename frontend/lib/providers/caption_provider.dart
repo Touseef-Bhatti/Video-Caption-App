@@ -96,6 +96,8 @@ class CaptionEditorNotifier extends StateNotifier<CaptionEditorState> {
   int _editRevision = 0;
   int? _renderRevision;
   String? _savedFingerprint;
+  int? _activeRenderResolution;
+  int? _activeRenderFps;
   Future<bool>? _saveFuture;
   final List<_CaptionEditSnapshot> _undoStack = [];
   final List<_CaptionEditSnapshot> _redoStack = [];
@@ -790,8 +792,20 @@ class CaptionEditorNotifier extends StateNotifier<CaptionEditorState> {
   /// saved caption data -- never re-invokes Gemini (section 56), so this
   /// is fast and free of extra AI cost. Returns the active or new job id so
   /// callers can resume waiting if a render is already running.
-  Future<String?> saveAndRerender() async {
-    if (state.isRendering) return state.lastRenderJobId;
+  Future<String?> saveAndRerender({
+    int outputResolution = 0,
+    int outputFps = 0,
+  }) async {
+    if (state.isRendering) {
+      if (_activeRenderResolution == outputResolution &&
+          _activeRenderFps == outputFps) {
+        return state.lastRenderJobId;
+      }
+      state = state.copyWith(
+        errorMessage: 'A render with different settings is already running.',
+      );
+      return null;
+    }
     if (state.isSaving || state.hasUnsavedChanges) {
       final saved = await save();
       if (!saved) return null;
@@ -802,6 +816,8 @@ class CaptionEditorNotifier extends StateNotifier<CaptionEditorState> {
     }
     final revision = _editRevision;
     _renderRevision = revision;
+    _activeRenderResolution = outputResolution;
+    _activeRenderFps = outputFps;
     state = state.copyWith(isRendering: true, clearError: true);
     try {
       final quality = _ref.read(settingsProvider).defaultExportQuality;
@@ -810,6 +826,8 @@ class CaptionEditorNotifier extends StateNotifier<CaptionEditorState> {
           .post('/api/projects/$projectId/render', data: {
         'quality': quality,
         'aspect_ratio': state.videoFormat,
+        'output_resolution': outputResolution,
+        'output_fps': outputFps,
       });
       final jobId = json['job_id'] as String;
       state = state.copyWith(
@@ -819,6 +837,8 @@ class CaptionEditorNotifier extends StateNotifier<CaptionEditorState> {
       );
       return jobId;
     } on ApiException catch (e) {
+      _activeRenderResolution = null;
+      _activeRenderFps = null;
       state = state.copyWith(isRendering: false, errorMessage: e.message);
       return null;
     }
@@ -828,20 +848,13 @@ class CaptionEditorNotifier extends StateNotifier<CaptionEditorState> {
   /// export downloadable, and edits made during a job stay dirty.
   Future<void> finishRender(String jobId, {required bool completed}) async {
     if (state.lastRenderJobId != jobId) return;
-    state = state.copyWith(isRendering: false);
-    if (!completed || _renderRevision != _editRevision) return;
-    try {
-      final json = await _ref
-          .read(apiClientProvider)
-          .get('/api/projects/$projectId/captions');
-      if (_renderRevision == _editRevision) {
-        state = state.copyWith(
-            hasUnrenderedChanges: json['matching_export_id'] == null ||
-                json['render_fingerprint'] != _savedFingerprint);
-      }
-    } on ApiException catch (e) {
-      state = state.copyWith(errorMessage: e.message);
-    }
+    _activeRenderResolution = null;
+    _activeRenderFps = null;
+    state = state.copyWith(
+      isRendering: false,
+      hasUnrenderedChanges:
+          !completed || _renderRevision != _editRevision,
+    );
   }
 
   Future<String?> matchingExportId() async {

@@ -3,12 +3,14 @@ import hashlib
 import json
 
 RENDERER_VERSION = "flutter-scene-v8"
+RENDER_PIPELINE_VERSION = "chunked-10s-4workers-v1"
 FPS = 15
 
 
 def caption_snapshot(caption, aspect_ratio=None):
     return {
         "renderer_version": RENDERER_VERSION,
+        "render_pipeline_version": RENDER_PIPELINE_VERSION,
         "fps": FPS,
         "caption_data": caption.caption_data,
         "style_preset": caption.style_preset,

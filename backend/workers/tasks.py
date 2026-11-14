@@ -201,12 +201,14 @@ def process_video_job(self, job_id: str) -> None:
         session.close()
 
 
-@task(bind=True, name="workers.tasks.rerender_project_job")
+@task(bind=True, name="workers.tasks.rerender_project_job", queue="render")
 def rerender_project_job(
     self,
     job_id: str,
     quality: str = "standard",
     aspect_ratio: str = "original",
+    output_resolution: int = 0,
+    output_fps: int = 0,
 ) -> None:
     """
     Re-renders the final video from the CURRENTLY SAVED caption_data and
@@ -281,7 +283,8 @@ def rerender_project_job(
         render_metrics = {}
         flutter_render_service.render_scene(
             local_video_path, snapshot, out_path, quality=quality, progress=on_progress,
-            probe=probe, metrics=render_metrics)
+            probe=probe, output_resolution=output_resolution,
+            output_fps=output_fps, metrics=render_metrics)
         diagnostics["render"] = render_metrics
         _save_diagnostics(session, job, diagnostics)
         finalize_started = time.perf_counter()
@@ -293,7 +296,18 @@ def rerender_project_job(
         upload_started = time.perf_counter()
         storage_service.upload_file(out_path, export_key)
         upload_seconds = time.perf_counter() - upload_started
-        session.add(Export(project_id=project.id, storage_key=export_key, quality=quality, render_fingerprint=fingerprint(snapshot), job_id=job.id))
+        session.add(Export(
+            project_id=project.id,
+            storage_key=export_key,
+            quality=quality,
+            output_resolution=output_resolution,
+            output_fps=output_fps,
+            render_fingerprint=fingerprint({
+                key: value for key, value in snapshot.items()
+                if key != "export_options"
+            }),
+            job_id=job.id,
+        ))
         project.status = "completed"
         commit_started = time.perf_counter()
         _update_job(session, job, status=JobStatus.completed, stage="Completed", progress=100)
@@ -318,8 +332,12 @@ def rerender_project_job(
     except ValueError as e:
         _save_diagnostics(session, job, diagnostics)
         _update_job(session, job, status=JobStatus.failed, stage="Failed", error=str(e))
-    except Exception:
+    except Exception as exc:
         logger.exception("Video re-render failed for job %s", job_id)
+        diagnostics["failure"] = {
+            "type": type(exc).__name__,
+            "message": str(exc)[:1000],
+        }
         _save_diagnostics(session, job, diagnostics)
         _update_job(
             session, job, status=JobStatus.failed, stage="Failed",

@@ -8,9 +8,19 @@ from __future__ import annotations
 from pathlib import Path
 import boto3
 from botocore.client import Config
+from boto3.s3.transfer import TransferConfig
 from app.config import get_settings
 
 settings = get_settings()
+
+# Use ranged, concurrent transfers for large objects while keeping memory and
+# socket use bounded on the API and worker processes.
+_TRANSFER_CONFIG = TransferConfig(
+    multipart_threshold=8 * 1024 * 1024,
+    multipart_chunksize=8 * 1024 * 1024,
+    max_concurrency=4,
+    use_threads=True,
+)
 
 
 def _client():
@@ -25,12 +35,18 @@ def _client():
 
 
 def upload_file(local_path: Path, storage_key: str) -> str:
-    _client().upload_file(str(local_path), settings.storage_bucket, storage_key)
+    _client().upload_file(
+        str(local_path), settings.storage_bucket, storage_key,
+        Config=_TRANSFER_CONFIG,
+    )
     return storage_key
 
 
 def download_file(storage_key: str, local_path: Path) -> Path:
-    _client().download_file(settings.storage_bucket, storage_key, str(local_path))
+    _client().download_file(
+        settings.storage_bucket, storage_key, str(local_path),
+        Config=_TRANSFER_CONFIG,
+    )
     return local_path
 
 

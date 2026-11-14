@@ -2,9 +2,9 @@
 
 Modal hosts the Flutter web frontend, FastAPI, transcription workers, video
 export workers, and scheduled cleanup. Keep the existing PostgreSQL database,
-private S3-compatible video storage, and Gemini API. No Render, Railway,
-hosted Redis, Celery worker service, or Celery Beat service is required.
-Local Docker Compose can still use Celery for development.
+private S3-compatible video storage, and Gemini API. Local Docker Compose runs
+FastAPI, Celery workers, Redis, and Celery Beat together for a repeatable local
+baseline.
 
 Live app: [Open Video Caption App](https://touseef12345bhatti--video-caption-app-web.us-east.modal.run/).
 Manage it in the [Modal deployment dashboard](https://modal.com/apps/touseef12345bhatti/main/deployed/video-caption-app).
@@ -49,10 +49,44 @@ and browser access. For a custom domain, configure it in Modal and include
 |---|---|---|
 | `web` | 1 CPU core, 2 GiB, at most 2 containers | Flutter files and FastAPI |
 | `process_video_job` | 1 CPU core, 2 GiB, at most 4 containers | Audio extraction and Gemini transcription |
-| `rerender_project_job` | L4 preferred, A10/T4 fallback, 2 CPU cores, 8 GiB, at most 2 containers | Caption graphics, compositing, video encoding |
+| `rerender_project_job` | T4/L4/A10 selected by export profile, 4 CPU cores, 8 GiB, 30-minute timeout, at most 1 container per GPU profile | Caption graphics, compositing, video encoding |
 | `cleanup_expired_files` | Every 15 minutes | Expired upload chunks and interrupted job recovery |
 | `migrate` | Explicit one-off command | Alembic migrations |
 | `check_render_hardware` | Explicit one-off command | Actual NVENC encode smoke test |
+
+Exports preserve the uploaded video's dimensions, frame rate, and original
+audio stream. Caption frames remain at 15 fps on a layer capped at 720 px.
+Low profiles prefer T4, medium profiles prefer L4, and 2K high-frame-rate or
+4K profiles prefer A10; Modal falls back through compatible GPU types,
+including T4 for high profiles when preferred GPUs are busy. The API
+allows one active render per user, and each GPU profile is capped at one
+container to bound aggregate GPU use.
+
+## Run the full local Docker stack
+
+Configure `backend/.env` with the Gemini and storage credentials needed by the
+pipeline. The default Compose configuration uses its own PostgreSQL and Redis
+containers, so local jobs do not write into the production database. Start all
+services from PowerShell:
+
+```powershell
+.\run_docker_local.ps1
+```
+
+This Docker-only local workflow does not call Modal. The local Compose override
+forces Celery jobs and local upload chunks even if `backend/.env` targets Modal.
+The stack starts the API at `http://localhost:9001`, transcription and render
+workers, Redis, and Celery Beat. Start the Flutter dev server separately with
+`.\frontend\run_web.ps1 -ApiBaseUrl http://localhost:9001`.
+
+For worker timing comparisons, submit the same input through the local Docker
+stack and the Modal app and compare the pipeline stage durations recorded by
+the application. Both paths call the same `workers.tasks` implementation, but
+the local path queues through Redis/Celery while production dispatches Modal
+functions directly. Queue startup, scheduler overhead, CPU allocation, and GPU
+availability differ, so total wall time is not an apples-to-apples measurement
+of the media pipeline alone. Compare stage durations and resource settings
+separately from queue wait time.
 
 CPU values are physical cores. The web service scales to zero; the first
 request can take longer while its container starts. GPU workers only run for
@@ -108,10 +142,6 @@ wait for captions, edit and save, export, and verify audio and caption appearanc
 Also test upload resume, cancellation, and `/api/diagnostics/system` while signed
 in. It reports Modal functions instead of requiring Redis. Production hides the
 development-only Gemini and detailed rendering diagnostics endpoints.
-
-Existing `railway.json`, shared-process startup files, and local Compose files
-are not used by `modal_app.py`. Stop old hosted compute only after validating the
-Modal deployment; keep the existing database and storage.
 
 References: [ASGI web apps](https://modal.com/docs/guide/webhooks),
 [background jobs](https://modal.com/docs/guide/job-queue),

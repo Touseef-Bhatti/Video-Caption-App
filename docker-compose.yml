@@ -74,7 +74,27 @@ services:
     # Never load a full video into RAM: the worker reads/writes files on
     # disk at every step (see workers/tasks.py), so this container's only
     # scaling knob is concurrency, not memory headroom per job.
-    command: celery -A workers.celery_app worker --loglevel=info --concurrency=2
+    command: celery -A workers.celery_app worker --loglevel=info --concurrency=2 --queues=celery
+
+  render_worker:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    restart: unless-stopped
+    env_file: ./backend/.env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://caption_user:caption_pass@postgres:5432/caption_db
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/1
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - temp_storage:/tmp/caption_app
+    command: celery -A workers.celery_app worker --loglevel=info --concurrency=1 --queues=render
 
   beat:
     build:

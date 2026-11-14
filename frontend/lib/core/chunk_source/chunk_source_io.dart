@@ -3,32 +3,36 @@ import 'dart:typed_data';
 
 import 'chunk_source_base.dart';
 
-/// Reads chunks straight from disk with a RandomAccessFile, so a multi-GB
-/// video is never loaded into memory -- only one chunk (a few MB) at a time.
+/// Reads chunks straight from disk with independent handles, allowing parallel
+/// reads without sharing a seek position.
 class FileChunkSource implements ChunkSource {
-  FileChunkSource._(this._raf, this.totalSize);
+  FileChunkSource._(this._file, this.totalSize);
 
-  final RandomAccessFile _raf;
+  final File _file;
 
   @override
   final int totalSize;
 
   static Future<FileChunkSource> open(String path) async {
     final file = File(path);
-    final raf = await file.open();
-    return FileChunkSource._(raf, await raf.length());
+    return FileChunkSource._(file, await file.length());
   }
 
   @override
   Future<Uint8List> readChunk(int start, int length) async {
     if (start >= totalSize) return Uint8List(0);
-    await _raf.setPosition(start);
     final toRead = (start + length) > totalSize ? totalSize - start : length;
-    return _raf.read(toRead);
+    final raf = await _file.open();
+    try {
+      await raf.setPosition(start);
+      return await raf.read(toRead);
+    } finally {
+      await raf.close();
+    }
   }
 
   @override
-  Future<void> dispose() => _raf.close();
+  Future<void> dispose() async {}
 }
 
 /// IO implementation. Opening the file is async, so this returns a source

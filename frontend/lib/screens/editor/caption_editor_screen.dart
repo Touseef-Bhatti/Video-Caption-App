@@ -12,6 +12,7 @@ import '../../core/api_exception.dart';
 import '../../core/caption_languages.dart';
 import '../../core/theme.dart';
 import '../../models/caption.dart';
+import '../../models/export_options.dart';
 import '../../models/job.dart';
 import '../../providers/caption_provider.dart';
 import '../../providers/export_provider.dart';
@@ -236,7 +237,7 @@ class _CaptionEditorScreenState extends ConsumerState<CaptionEditorScreen> {
     ));
   }
 
-  Future<void> _renderAgain({bool downloadWhenDone = false}) async {
+  Future<void> _renderAgain(ExportOptions options) async {
     if (_isSaveRenderBusy) return;
     setState(() => _isSaveRenderBusy = true);
     showDialog<void>(
@@ -248,7 +249,10 @@ class _CaptionEditorScreenState extends ConsumerState<CaptionEditorScreen> {
     final notifier = ref.read(captionEditorProvider(widget.projectId).notifier);
     var dialogOpen = true;
     try {
-      final jobId = await notifier.saveAndRerender();
+      final jobId = await notifier.saveAndRerender(
+        outputResolution: options.resolution,
+        outputFps: options.fps,
+      );
       if (!mounted) return;
       Navigator.of(context, rootNavigator: true).pop();
       dialogOpen = false;
@@ -262,15 +266,13 @@ class _CaptionEditorScreenState extends ConsumerState<CaptionEditorScreen> {
             completed: result?.isCompleted == true);
         if (mounted) {
           ref.invalidate(exportsProvider(widget.projectId));
-          if (result?.isCompleted == true && downloadWhenDone) {
-            await _openMatchingExport();
-          } else if (!downloadWhenDone || result?.isCompleted != true) {
+          if (result?.isCompleted == true) {
+            await _openJobExport(jobId);
+          } else {
             ScaffoldMessenger.of(context).showSnackBar(
               SnackBar(
                 content: Text(
-                  result?.isCompleted == true
-                      ? 'Your edited video is ready to download.'
-                      : (result?.error ?? 'Video rendering did not complete.'),
+                  result?.error ?? 'Video rendering did not complete.',
                 ),
               ),
             );
@@ -295,21 +297,8 @@ class _CaptionEditorScreenState extends ConsumerState<CaptionEditorScreen> {
   Future<void> _downloadLatest() async {
     setState(() => _isDownloading = true);
     try {
-      final editorState = ref.read(captionEditorProvider(widget.projectId));
-      if (editorState.hasUnsavedChanges || editorState.hasUnrenderedChanges) {
-        await _renderAgain(downloadWhenDone: true);
-        return;
-      }
-
-      final exportId = await ref
-          .read(captionEditorProvider(widget.projectId).notifier)
-          .matchingExportId();
       if (!mounted) return;
-      if (exportId == null) {
-        await _renderAgain(downloadWhenDone: true);
-        return;
-      }
-      await _openExportDownload(exportId);
+      await _renderAgain(const ExportOptions());
     } on ApiException catch (e) {
       if (mounted)
         ScaffoldMessenger.of(context)
@@ -338,18 +327,36 @@ class _CaptionEditorScreenState extends ConsumerState<CaptionEditorScreen> {
     ));
   }
 
-  Future<void> _openMatchingExport() async {
-    final exportId = await ref
-        .read(captionEditorProvider(widget.projectId).notifier)
-        .matchingExportId();
-    if (!mounted) return;
-    if (exportId == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('The edited video is not ready yet.')),
-      );
-      return;
+  Future<void> _openJobExport(String jobId) async {
+    ref.invalidate(exportsProvider(widget.projectId));
+    final exports = await ref.read(exportsProvider(widget.projectId).future);
+    ExportItem? export;
+    for (final item in exports) {
+      if (item.jobId == jobId) {
+        export = item;
+        break;
+      }
     }
-    await _openExportDownload(exportId);
+    if (!mounted) return;
+    if (export == null) {
+      throw StateError('The completed render has no downloadable export.');
+    }
+    final save = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Your video is ready'),
+        content: const Text('Save the rendered video to your device.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Close')),
+          FilledButton.icon(
+            onPressed: () => Navigator.pop(context, true),
+            icon: const Icon(Icons.download),
+            label: const Text('Save to device'),
+          ),
+        ],
+      ),
+    );
+    if (save == true && mounted) await _openExportDownload(export.id);
   }
 
   Future<void> _openExportDownload(String exportId) async {
@@ -1768,7 +1775,7 @@ class _MediaTab extends StatelessWidget {
       );
 }
 
-class _DesktopEditorTimeline extends StatelessWidget {
+class _DesktopEditorTimeline extends StatefulWidget {
   const _DesktopEditorTimeline({
     required this.transcript,
     required this.positionSeconds,
@@ -1798,9 +1805,27 @@ class _DesktopEditorTimeline extends StatelessWidget {
   final VoidCallback onTogglePlayback;
 
   @override
+  State<_DesktopEditorTimeline> createState() => _DesktopEditorTimelineState();
+}
+
+class _DesktopEditorTimelineState extends State<_DesktopEditorTimeline> {
+  static const double _pixelsPerSecond = 60;
+  final ScrollController _timelineScroll = ScrollController();
+
+  @override
+  void dispose() {
+    _timelineScroll.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
-    final duration = durationSeconds != null && durationSeconds! > 0
-        ? durationSeconds!
+    final transcript = widget.transcript;
+    final positionSeconds = widget.positionSeconds;
+    final isPlaying = widget.isPlaying;
+    final onSeek = widget.onSeek;
+    final duration = widget.durationSeconds != null && widget.durationSeconds! > 0
+        ? widget.durationSeconds!
         : transcript.segments.fold<double>(
             1, (value, segment) => value > segment.end ? value : segment.end);
     return Container(
@@ -1816,7 +1841,7 @@ class _DesktopEditorTimeline extends StatelessWidget {
               children: [
                 IconButton(
                   tooltip: isPlaying ? 'Pause' : 'Play',
-                  onPressed: onTogglePlayback,
+                  onPressed: widget.onTogglePlayback,
                   icon: Icon(isPlaying ? Icons.pause : Icons.play_arrow),
                 ),
                 IconButton(
@@ -1861,32 +1886,47 @@ class _DesktopEditorTimeline extends StatelessWidget {
                 Expanded(
                   child: LayoutBuilder(
                     builder: (context, constraints) {
-                      final width = constraints.maxWidth;
-                      return Stack(
-                        fit: StackFit.expand,
-                        children: [
-                          GestureDetector(
-                            behavior: HitTestBehavior.opaque,
-                            onTapUp: (details) => onSeek(
-                                (details.localPosition.dx / width * duration)
-                                    .clamp(0.0, duration)
-                                    .toDouble()),
-                            onHorizontalDragUpdate: (details) => onSeek(
-                                (details.localPosition.dx / width * duration)
-                                    .clamp(0.0, duration)
-                                    .toDouble()),
-                            child: CustomPaint(
-                              painter: _DesktopTimelinePainter(
-                                duration: duration,
-                                position: positionSeconds,
-                              ),
+                      final viewportWidth = constraints.maxWidth;
+                      final pixelsPerSecond = math.max(
+                          _pixelsPerSecond, viewportWidth / 15);
+                      final contentWidth = math.max(
+                          viewportWidth, duration * pixelsPerSecond);
+                      final timelineScale = contentWidth / duration;
+                      return Scrollbar(
+                        controller: _timelineScroll,
+                        thumbVisibility: true,
+                        notificationPredicate: (notification) =>
+                            notification.metrics.axis == Axis.horizontal,
+                        child: SingleChildScrollView(
+                          controller: _timelineScroll,
+                          scrollDirection: Axis.horizontal,
+                          child: SizedBox(
+                            width: contentWidth,
+                            child: Stack(
+                              fit: StackFit.expand,
+                              children: [
+                                GestureDetector(
+                                  behavior: HitTestBehavior.opaque,
+                                  onTapUp: (details) => onSeek(
+                                    (details.localPosition.dx / timelineScale)
+                                        .clamp(0.0, duration)
+                                        .toDouble(),
+                                  ),
+                                  child: CustomPaint(
+                                    painter: _DesktopTimelinePainter(
+                                      duration: duration,
+                                      position: positionSeconds,
+                                    ),
+                                  ),
+                                ),
+                                for (var index = 0;
+                                    index < transcript.segments.length;
+                                    index++)
+                                  _buildTimelineClip(index, duration, timelineScale),
+                              ],
                             ),
                           ),
-                          for (var index = 0;
-                              index < transcript.segments.length;
-                              index++)
-                            _buildTimelineClip(index, width, duration),
-                        ],
+                        ),
                       );
                     },
                   ),
@@ -1899,24 +1939,25 @@ class _DesktopEditorTimeline extends StatelessWidget {
     );
   }
 
-  Widget _buildTimelineClip(int index, double width, double duration) {
-    final segment = transcript.segments[index];
-    final preview = trimPreviews[index];
+  Widget _buildTimelineClip(
+      int index, double duration, double pixelsPerSecond) {
+    final segment = widget.transcript.segments[index];
+    final preview = widget.trimPreviews[index];
     final start = preview?.$1 ?? segment.start;
     final end = preview?.$2 ?? segment.end;
     return Positioned(
-      left: (start / duration * width).clamp(0.0, width).toDouble(),
+      left: start * pixelsPerSecond,
       top: 74,
-      width: ((end - start) / duration * width).clamp(20.0, width).toDouble(),
+      width: math.max(20.0, (end - start) * pixelsPerSecond),
       height: 36,
       child: _TimelineCaptionClip(
         segment: segment,
         maxDuration: duration,
-        selected: index == selectedSegmentIndex,
-        onTap: () => onSelectSegment(index),
-        onDoubleTap: () => onEditSegment(index),
-        onTrimPreview: (trim) => onTrimPreview(index, trim.$1, trim.$2),
-        onTrim: (trim) => onTrimSegment(index, trim.$1, trim.$2),
+        selected: index == widget.selectedSegmentIndex,
+        onTap: () => widget.onSelectSegment(index),
+        onDoubleTap: () => widget.onEditSegment(index),
+        onTrimPreview: (trim) => widget.onTrimPreview(index, trim.$1, trim.$2),
+        onTrim: (trim) => widget.onTrimSegment(index, trim.$1, trim.$2),
       ),
     );
   }

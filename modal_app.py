@@ -12,7 +12,7 @@ ROOT = Path(__file__).resolve().parent
 APP_NAME = os.environ.get("MODAL_APP_NAME", "video-caption-app")
 SECRET_NAME = os.environ.get("MODAL_CONFIG_SECRET", "caption-app-config")
 RENDER_GPU = os.environ.get("MODAL_RENDER_GPU", "auto")
-GPU_REQUEST = (["L4", "A10", "T4"] if RENDER_GPU.lower() == "auto"
+GPU_REQUEST = (["T4", "L4", "A10"] if RENDER_GPU.lower() == "auto"
                else None if RENDER_GPU.lower() == "none" else RENDER_GPU)
 
 app = modal.App(APP_NAME)
@@ -22,6 +22,7 @@ RUNTIME_ENV = {
     "ENVIRONMENT": "production",
     "JOB_BACKEND": "modal",
     "MODAL_APP_NAME": APP_NAME,
+    "MODAL_RENDER_GPU": RENDER_GPU,
     "CHUNK_STORAGE_BACKEND": "object_storage",
     "TEMP_STORAGE_DIR": "/tmp/caption_app",
 }
@@ -64,14 +65,20 @@ def process_video_job(job_id: str):
     process.run(job_id)
 
 
-@app.function(image=image, secrets=[secret], cpu=2, memory=8192,
+@app.function(image=image, secrets=[secret], cpu=4, memory=8192,
               gpu=GPU_REQUEST,
-              timeout=7200, max_containers=2, retries=0)
-def rerender_project_job(job_id: str, quality: str = "standard", aspect_ratio: str = "original"):
+              timeout=1800, max_containers=1, retries=0)
+def rerender_project_job(
+    job_id: str,
+    quality: str = "standard",
+    aspect_ratio: str = "original",
+    output_resolution: int = 0,
+    output_fps: int = 0,
+):
     os.environ.update(RUNTIME_ENV)
     from workers.tasks import rerender_project_job as render
 
-    render.run(job_id, quality, aspect_ratio)
+    render.run(job_id, quality, aspect_ratio, output_resolution, output_fps)
 
 
 @app.function(image=image, secrets=[secret], cpu=0.25, memory=512,
