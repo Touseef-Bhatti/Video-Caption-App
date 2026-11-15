@@ -53,9 +53,13 @@ class Settings(BaseSettings):
 
     ffmpeg_threads: int = Field(default=4, ge=1, le=16)
     ffmpeg_filter_threads: int | None = Field(default=None, ge=1, le=16)
+    render_capture_workers: int = Field(default=4, ge=1, le=16)
     h264_crf: int = Field(default=23, ge=0, le=51)
     h264_maxrate: str = "2500k"
     h264_bufsize: str = "5000k"
+    h264_min_maxrate: str = "1200k"
+    nvenc_maxrate_cap: str = "2500k"
+    nvenc_cq: int = Field(default=28, ge=0, le=51)
     caption_render_strategy: Literal["legacy", "adaptive"] = "legacy"
 
     @model_validator(mode="after")
@@ -64,13 +68,24 @@ class Settings(BaseSettings):
             self.ffmpeg_filter_threads = self.ffmpeg_threads
         return self
 
-    @field_validator("h264_maxrate", "h264_bufsize")
+    @field_validator("h264_maxrate", "h264_bufsize", "h264_min_maxrate", "nvenc_maxrate_cap")
     @classmethod
     def valid_bitrate(cls, value: str) -> str:
         import re
         if not re.fullmatch(r"[1-9][0-9]*[kKmM]?", value):
             raise ValueError("must be a positive FFmpeg bitrate (for example, 2500k)")
         return value
+
+    @model_validator(mode="after")
+    def nvenc_cap_not_below_minimum(self):
+        def as_bps(value: str) -> int:
+            suffix = value[-1:].lower()
+            amount = int(value[:-1] if suffix in {"k", "m"} else value)
+            return amount * (1_000 if suffix == "k" else 1_000_000 if suffix == "m" else 1)
+
+        if as_bps(self.nvenc_maxrate_cap) < as_bps(self.h264_min_maxrate):
+            raise ValueError("nvenc_maxrate_cap must be at least h264_min_maxrate")
+        return self
 
     temp_storage_dir: str = "/tmp/caption_app"
     temp_file_retention_minutes: int = 60

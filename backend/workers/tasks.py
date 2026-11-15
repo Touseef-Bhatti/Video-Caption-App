@@ -14,10 +14,17 @@ from __future__ import annotations
 
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
+from functools import lru_cache
 import logging
+import os
 import shutil
+import statistics
+import subprocess
+import threading
 import time
 from pathlib import Path
+from sqlalchemy import text
 
 from workers.task_queue import task
 from workers.db_sync import SyncSessionLocal
@@ -29,6 +36,8 @@ from schemas.schemas import GeminiTranscriptResponse
 
 settings = get_settings()
 logger = logging.getLogger(__name__)
+_worker_start_lock = threading.Lock()
+_worker_has_started_job = False
 
 
 class JobCancelled(Exception):
@@ -74,8 +83,55 @@ def _save_diagnostics(session, job: ProcessingJob, diagnostics: dict) -> None:
     session.commit()
 
 
+@lru_cache(maxsize=1)
+def _gpu_name() -> str | None:
+    try:
+        result = subprocess.run(
+            ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
+            capture_output=True, text=True, timeout=3, check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0 or not result.stdout.strip():
+        return None
+    return result.stdout.splitlines()[0].strip()
+
+
+def _worker_runtime_diagnostics(session, job: ProcessingJob,
+                                worker_started_at: datetime) -> dict:
+    global _worker_has_started_job
+    with _worker_start_lock:
+        container_cold_start = not _worker_has_started_job
+        _worker_has_started_job = True
+
+    created_at = job.created_at
+    if created_at.tzinfo is None:
+        created_at = created_at.replace(tzinfo=timezone.utc)
+    queue_wait_seconds = max(0.0, (worker_started_at - created_at).total_seconds())
+
+    roundtrips = []
+    try:
+        for _ in range(5):
+            started = time.perf_counter()
+            session.execute(text("SELECT 1")).scalar()
+            roundtrips.append((time.perf_counter() - started) * 1000)
+    except Exception:
+        logger.exception("Could not sample worker database round trips for job %s", job.id)
+        session.rollback()
+        roundtrips.clear()
+
+    return {
+        "container_cold_start": container_cold_start,
+        "queue_wait_seconds": round(queue_wait_seconds, 6),
+        "db_roundtrip_ms": round(statistics.median(roundtrips), 3) if len(roundtrips) == 5 else None,
+        "gpu_name": _gpu_name(),
+        "region": os.environ.get("MODAL_REGION", "unknown"),
+    }
+
+
 @task(bind=True, name="workers.tasks.process_video_job")
 def process_video_job(self, job_id: str) -> None:
+    worker_started_at = datetime.now(timezone.utc)
     session = SyncSessionLocal()
     work_dir = Path(settings.temp_storage_dir) / "processing" / job_id
     work_dir.mkdir(parents=True, exist_ok=True)
@@ -88,9 +144,10 @@ def process_video_job(self, job_id: str) -> None:
     project = session.get(Project, job.project_id)
     video: Video = project.video
     diagnostics = {
-        "schema_version": 1,
+        "schema_version": 2,
         "job_type": "initial_processing",
         "pipeline_phases_seconds": {},
+        **_worker_runtime_diagnostics(session, job, worker_started_at),
     }
 
     try:
@@ -222,6 +279,7 @@ def rerender_project_job(
     56: never send the same audio to Gemini twice because of a workflow
     that doesn't need it).
     """
+    worker_started_at = datetime.now(timezone.utc)
     session = SyncSessionLocal()
     work_dir = Path(settings.temp_storage_dir) / "processing" / job_id
     work_dir.mkdir(parents=True, exist_ok=True)
@@ -234,9 +292,10 @@ def rerender_project_job(
     video: Video = project.video
     caption = session.query(Caption).filter(Caption.project_id == project.id).one_or_none()
     diagnostics = {
-        "schema_version": 3,
+        "schema_version": 4,
         "job_type": "edited_rerender",
         "pipeline_phases_seconds": {},
+        **_worker_runtime_diagnostics(session, job, worker_started_at),
     }
 
     try:

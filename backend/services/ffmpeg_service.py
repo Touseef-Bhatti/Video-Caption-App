@@ -80,7 +80,9 @@ def probe_video(path: Path) -> VideoProbe:
             frame_rate = rate_numerator / rate_denominator
     except (ValueError, TypeError, AttributeError):
         pass
-    bit_rate = video_stream.get("bit_rate") or fmt.get("bit_rate")
+    # Keep the video stream bitrate distinct from the container bitrate, which
+    # may include audio and would overstate the source video rate for capping.
+    bit_rate = video_stream.get("bit_rate")
     try:
         bit_rate = int(bit_rate) if bit_rate is not None else None
     except (TypeError, ValueError):
@@ -413,6 +415,8 @@ def output_dimensions(width: int, height: int, aspect_ratio: str = "original",
 QUALITY_PRESETS = {
     # Preserve caption panel/text colors as closely as broadly compatible
     # yuv420p H.264 permits; lower CRF reduces quantization on flat fills.
+    # CRF/preset fields are libx264 controls. NVENC uses the separate
+    # NVENC_CQ setting and its p4/p6 preset in video_encoder.py.
     "standard": {"crf": "18", "preset": "veryfast", "scale": None},
     "high":     {"crf": "16", "preset": "slow", "scale": None},
 }

@@ -60,6 +60,20 @@ async def test_protected_route_requires_token(client):
     assert (await client.get("/api/projects")).status_code == 401
 
 
+async def test_api_response_exposes_server_and_database_timing(client):
+    response = await client.post("/api/auth/register", json={
+        "email": "timing@example.com", "password": "correct-horse-1",
+    })
+    assert response.status_code == 201
+    metrics = {
+        name.strip(): float(value.split("=", 1)[1])
+        for name, value in (part.strip().split(";", 1)
+                            for part in response.headers["server-timing"].split(","))
+    }
+    assert metrics["handler"] >= 0
+    assert metrics["db"] > 0
+
+
 async def test_password_reset_is_hashed_single_use_and_expiring(client, session_factory):
     await _register(client)
     r = await client.post("/api/auth/forgot-password", json={"email": "a@example.com"})

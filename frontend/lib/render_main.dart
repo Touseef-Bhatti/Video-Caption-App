@@ -92,9 +92,17 @@ class _RendererState extends State<_Renderer> {
     });
   }
 
-  Future<void> setFrameTime(double seconds) async {
+  Future<JSString> setFrameTime(double seconds) async {
+    final setStarted = Stopwatch()..start();
     setState(() => time = seconds);
+    final setSceneTimeMicros = setStarted.elapsedMicroseconds;
+    final waitStarted = Stopwatch()..start();
     await WidgetsBinding.instance.endOfFrame;
+    final frameWaitMicros = waitStarted.elapsedMicroseconds;
+    return jsonEncode({
+      'set_scene_time_seconds': setSceneTimeMicros / 1000000,
+      'frame_wait_seconds': frameWaitMicros / 1000000,
+    }).toJS;
   }
 
   Future<JSString> capture(double seconds) async {

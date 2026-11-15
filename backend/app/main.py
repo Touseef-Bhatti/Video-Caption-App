@@ -1,5 +1,6 @@
 import logging
 from pathlib import Path
+from time import perf_counter
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -8,6 +9,7 @@ from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 
 from app.config import get_settings
+from app.database import server_timing_context
 from app.limiter import limiter
 from routes import (
     auth_routes,
@@ -43,7 +45,23 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["Server-Timing"],
 )
+
+
+@app.middleware("http")
+async def add_server_timing(request: Request, call_next):
+    timing = {"db_seconds": 0.0, "query_started": {}}
+    token = server_timing_context.set(timing)
+    started = perf_counter()
+    try:
+        response = await call_next(request)
+        handler_ms = (perf_counter() - started) * 1000
+        db_ms = timing["db_seconds"] * 1000
+        response.headers["Server-Timing"] = f"handler;dur={handler_ms:.3f}, db;dur={db_ms:.3f}"
+        return response
+    finally:
+        server_timing_context.reset(token)
 
 app.include_router(auth_routes.router)
 app.include_router(video_routes.router)
