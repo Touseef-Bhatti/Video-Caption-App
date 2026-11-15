@@ -78,6 +78,32 @@
   function phaseValue(render,key){return key==='orchestration_and_progress'?render?.orchestration_and_progress_seconds:render?.phases_seconds?.[key]}
   function addAnalysisTableRow(target,values,wrapFrom=99){const tr=document.createElement('tr');appendCells(tr,values,wrapFrom);$(target).append(tr)}
   function settingValue(render,key){if(!render)return'?';const f=render.ffmpeg||{},w=render.workload||{},o=render.output||{},d=render.derived||{},p=f.reported_progress||{},i=render.input||{},c=render.chunking||{};return({pipeline_version:render.render_pipeline_version,chunking:`${c.chunk_duration_seconds||'-'}s chunks | ${c.parallel_workers||'-'} workers | ${c.boundary_unit||'unknown'} boundaries | ${c.animation_timestamps||'unknown'} timing | ${c.merge_order||'unknown'} merge | ${num(c.wall_seconds,3)}s wall`,renderer_version:render.renderer_version,capture_method:render.capture_method,input:`${i.width}x${i.height} | ${num(i.duration_seconds,3)} s | ${i.video_codec||'unknown codec'} | ${num(i.frame_rate,3)} fps | ${Number.isFinite(i.bit_rate)?`${num(i.bit_rate/1000,1)} kbps video`:'video bitrate unknown'} | ${i.pixel_format||'unknown pixel format'} | ${i.container||'unknown container'} | ${i.audio_codec||'no audio'}`,output:`${o.width}x${o.height} | ${w.fps} fps | ${prettyBytes(o.bytes)} | ${num(o.average_bitrate_kbits_per_second,1)} kbit/s total | ${Number.isFinite(o.video_bitrate_bps)?`${num(o.video_bitrate_bps/1000,1)} kbit/s video`:'video bitrate unknown'}`,workload:`${prettyCount(w.frames)} frames | ${w.fps} fps | ${prettyCount(w.pixels_per_frame)} px/frame | ${num(w.total_overlay_pixels/1e6,2)} MP total`,video:`${f.video_codec} | preset ${f.preset} | ${f.video_codec==='h264_nvenc'?`CQ ${f.effective_cq??f.cq} | maxrate ${f.effective_maxrate||f.maxrate} | bufsize ${f.effective_bufsize||f.bufsize}`:`CRF ${f.crf} | maxrate ${f.maxrate||'uncapped'} | bufsize ${f.bufsize||'uncapped'}`} | source ${Number.isFinite(f.source_video_bitrate_bps)?`${num(f.source_video_bitrate_bps/1000,1)} kbps`:'unknown'} | output ${Number.isFinite(f.output_video_bitrate_bps)?`${num(f.output_video_bitrate_bps/1000,1)} kbps`:'unknown'} | ${f.pixel_format} | encoder threads ${f.encoder_threads}`,audio:`${f.audio_codec} | ${f.audio_bitrate}`,overlay:f.overlay_input_format,threads:f.filter_complex_threads,progress:`frame ${p.frame??'?'} | ${num(p.fps,2)} fps | ${num(p.speed_x,3)}x | ${p.output_time||'?'}`,throughput:`${num(d.capture_milliseconds_per_frame,2)} ms/frame | ${num(d.capture_frames_per_second,2)} capture fps | ${num(d.overlay_megapixels_per_second,2)} MP/s | ${prettyBytes(d.png_pipe_bytes)} PNG pipe | ${prettyBytes(d.average_png_bytes_per_frame)}/frame`})[key]}
+  function buildFindings(render){
+    const findings=[];
+    const phases=render?.phases_seconds||{};
+    const phaseLabels={parallel_overlay_generation:'Parallel overlay generation',overlay_chunk_merge:'Overlay chunk merge',full_resolution_composite:'Full-resolution composite and encode',output_probe:'Output validation'};
+    const measured=Object.entries(phases).filter(([,seconds])=>Number.isFinite(seconds)&&seconds>=0).sort((a,b)=>b[1]-a[1]);
+    const total=Number.isFinite(render?.total_seconds)?render.total_seconds:measured.reduce((sum,[,seconds])=>sum+seconds,0);
+    if(measured.length){
+      const [key,seconds]=measured[0],share=total>0?seconds/total*100:null;
+      findings.push({priority:share>=50?'high':'medium',finding:`${phaseLabels[key]||key} is the largest measured render phase.`,evidence:`${num(seconds,2)} s${Number.isFinite(share)?` (${num(share,1)}% of ${num(total,2)} s total)`:' measured'}.`,action:key==='parallel_overlay_generation'?'Compare 4, 6, and 8 RENDER_CAPTURE_WORKERS using the same source; record wall time and memory for each run.':key==='full_resolution_composite'?'Use the NVENC benchmark across the supported CQ and preset combinations, then compare quality and output size.':'Use the phase timing breakdown to target the next measurement.'});
+    }
+    const capture=render?.capture||{},perFrame=capture.per_frame_seconds||{};
+    if(Number.isFinite(perFrame.screenshot_and_png_encode)){
+      findings.push({priority:'medium',finding:'Chromium screenshot and PNG encoding are reported as one combined measurement.',evidence:`${num(perFrame.screenshot_and_png_encode*1000,2)} ms/frame across ${prettyCount(capture.frames_total||0)} frames.`,action:'The browser API does not expose PNG encoding separately; treat this value as screenshot plus PNG encoding.'});
+    }
+    const configured=render?.chunking?.configured_workers,effective=render?.chunking?.parallel_workers,chunks=render?.chunking?.chunks?.length;
+    if(Number.isFinite(configured)&&Number.isFinite(effective)&&configured!==effective){
+      findings.push({priority:'low',finding:'Effective capture workers were limited by the chunk count.',evidence:`${effective} workers handled ${chunks??effective} chunks with ${configured} configured.`,action:'Longer inputs that produce more chunks are needed to measure the configured worker count at full concurrency.'});
+    }
+    if(Number.isFinite(perFrame.frame_wait)&&perFrame.frame_wait>0){
+      findings.push({priority:'low',finding:'Flutter frame synchronization contributes to per-frame capture time.',evidence:`${num(perFrame.frame_wait*1000,2)} ms/frame in the explicit endOfFrame wait.`,action:'Keep this wait unless a wait-free capture passes the renderer pixel-equivalence gate.'});
+    }
+    if(!findings.length){
+      findings.push({priority:'low',finding:'No render phase timings were available for a ranked diagnosis.',evidence:'The render diagnostics payload did not include measurable phase durations.',action:'Confirm the worker emitted render diagnostics and rerun the performance test.'});
+    }
+    return findings;
+  }
   function renderAnalysis(){
     const duringCaptionGeneration=renderOf('processing'),finalRender=renderOf('rerender'),target=finalRender||duringCaptionGeneration;
     const processingDiagnostics=diagOf('processing'),observedProcessingStages=report.processing?.observations||[];
