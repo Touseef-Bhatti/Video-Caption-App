@@ -1,15 +1,18 @@
 import re
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
+from app.config import get_settings
 from app.security import get_current_user_id
 from models.models import Export, Project
 from services import storage_service
 
 router = APIRouter(tags=["exports"])
+_DOWNLOAD_BLOCK_SIZE = 1024 * 1024
 
 
 @router.get("/api/projects/{project_id}/exports")
@@ -52,3 +55,54 @@ async def download_export(export_id: str, user_id: str = Depends(get_current_use
         download_filename=safe_name,
     )
     return {"download_url": url, "expires_in_seconds": 3600}
+
+
+@router.get("/api/exports/{export_id}/content")
+async def stream_export_content(
+    export_id: str,
+    user_id: str = Depends(get_current_user_id),
+    db: AsyncSession = Depends(get_db),
+):
+    """Stream an owned export through the API for same-origin browser measurement."""
+    export = await db.get(Export, export_id)
+    if not export:
+        raise HTTPException(status_code=404, detail="Export not found.")
+    project = await db.get(Project, export.project_id)
+    if not project or project.user_id != user_id:
+        raise HTTPException(status_code=404, detail="Export not found.")
+
+    settings = get_settings()
+    if settings.storage_provider == "modal":
+        storage_service._refresh_volume()
+        path = storage_service.local_path(export.storage_key)
+        if not path.is_file():
+            raise HTTPException(status_code=404, detail="Export file not found.")
+        size = path.stat().st_size
+
+        def chunks():
+            with path.open("rb") as source:
+                while block := source.read(_DOWNLOAD_BLOCK_SIZE):
+                    yield block
+
+    else:
+        try:
+            obj = storage_service._client().get_object(
+                Bucket=settings.storage_bucket,
+                Key=export.storage_key,
+            )
+        except Exception as exc:
+            raise HTTPException(status_code=404, detail="Export file not found.") from exc
+        body = obj["Body"]
+        size = obj.get("ContentLength")
+
+        def chunks():
+            try:
+                while block := body.read(_DOWNLOAD_BLOCK_SIZE):
+                    yield block
+            finally:
+                body.close()
+
+    headers = {"Accept-Ranges": "none", "Cache-Control": "private, no-store"}
+    if size is not None:
+        headers["Content-Length"] = str(size)
+    return StreamingResponse(chunks(), media_type="video/mp4", headers=headers)

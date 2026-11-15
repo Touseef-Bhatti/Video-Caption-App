@@ -196,8 +196,7 @@ async def get_render_diagnostics(
     user_id: str = Depends(get_current_user_id),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
-    """Return detailed timing only for a development user's own render job."""
-    _require_development()
+    """Return detailed timing for the authenticated owner of a render job."""
     job = await db.get(ProcessingJob, job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found.")
