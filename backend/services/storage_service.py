@@ -1,20 +1,22 @@
-"""
-S3-compatible object storage (works for AWS S3, Cloudflare R2, Supabase
-Storage -- anything with an S3 API, set via STORAGE_ENDPOINT_URL).
-Videos are never made public: everything is private, downloads go through
-short-lived signed URLs only (section 19, 20).
-"""
+"""Private object storage backed by S3-compatible storage or a Modal Volume."""
 from __future__ import annotations
-from pathlib import Path
+
+import hashlib
+import hmac
+import os
+import shutil
+import time
+from pathlib import Path, PurePosixPath
+from urllib.parse import quote, urlencode
+
 import boto3
 from botocore.client import Config
 from boto3.s3.transfer import TransferConfig
+
 from app.config import get_settings
 
 settings = get_settings()
 
-# Use ranged, concurrent transfers for large objects while keeping memory and
-# socket use bounded on the API and worker processes.
 _TRANSFER_CONFIG = TransferConfig(
     multipart_threshold=8 * 1024 * 1024,
     multipart_chunksize=8 * 1024 * 1024,
@@ -34,27 +36,89 @@ def _client():
     )
 
 
-def upload_file(local_path: Path, storage_key: str) -> str:
-    _client().upload_file(
-        str(local_path), settings.storage_bucket, storage_key,
-        Config=_TRANSFER_CONFIG,
-    )
+def _safe_key(storage_key: str) -> PurePosixPath:
+    key = PurePosixPath(storage_key)
+    if not storage_key or key.is_absolute() or ".." in key.parts or "\\" in storage_key:
+        raise ValueError("Invalid storage key.")
+    return key
+
+
+def _modal_root() -> Path:
+    return Path(settings.modal_storage_path).resolve()
+
+
+def local_path(storage_key: str) -> Path:
+    """Return the mounted Modal Volume path for a validated object key."""
+    return _modal_root().joinpath(*_safe_key(storage_key).parts)
+
+
+def _volume():
+    import modal
+
+    return modal.Volume.from_name(settings.modal_storage_volume, version=2)
+
+
+def _refresh_volume() -> None:
+    if settings.storage_provider == "modal":
+        _volume().reload()
+
+
+def _commit_volume() -> None:
+    if settings.storage_provider == "modal":
+        _volume().commit()
+
+
+def upload_file(local_file: Path, storage_key: str) -> str:
+    if settings.storage_provider == "modal":
+        destination = local_path(storage_key)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(local_file, destination)
+        _commit_volume()
+    else:
+        _client().upload_file(
+            str(local_file), settings.storage_bucket, storage_key,
+            Config=_TRANSFER_CONFIG,
+        )
     return storage_key
 
 
-def download_file(storage_key: str, local_path: Path) -> Path:
-    _client().download_file(
-        settings.storage_bucket, storage_key, str(local_path),
-        Config=_TRANSFER_CONFIG,
-    )
-    return local_path
+def download_file(storage_key: str, destination: Path) -> Path:
+    if settings.storage_provider == "modal":
+        _refresh_volume()
+        source = local_path(storage_key)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source, destination)
+    else:
+        _client().download_file(
+            settings.storage_bucket, storage_key, str(destination),
+            Config=_TRANSFER_CONFIG,
+        )
+    return destination
 
 
 def delete_file(storage_key: str) -> None:
-    _client().delete_object(Bucket=settings.storage_bucket, Key=storage_key)
+    if settings.storage_provider == "modal":
+        local_path(storage_key).unlink(missing_ok=True)
+        _commit_volume()
+    else:
+        _client().delete_object(Bucket=settings.storage_bucket, Key=storage_key)
 
 
 def list_keys(prefix: str) -> list[str]:
+    if settings.storage_provider == "modal":
+        _refresh_volume()
+        root = _modal_root()
+        base = local_path(prefix) if prefix else root
+        if base.is_file():
+            return [base.relative_to(root).as_posix()]
+        if not base.exists():
+            return []
+        return [
+            path.relative_to(root).as_posix()
+            for path in base.rglob("*")
+            if path.is_file() and not path.relative_to(root).as_posix().startswith(".modal-internal/")
+        ]
+
     pages = _client().get_paginator("list_objects_v2").paginate(
         Bucket=settings.storage_bucket, Prefix=prefix,
     )
@@ -62,6 +126,15 @@ def list_keys(prefix: str) -> list[str]:
 
 
 def delete_prefix(prefix: str) -> None:
+    if settings.storage_provider == "modal":
+        target = local_path(prefix)
+        if target.is_dir():
+            shutil.rmtree(target)
+        else:
+            target.unlink(missing_ok=True)
+        _commit_volume()
+        return
+
     client = _client()
     keys = list_keys(prefix)
     for start in range(0, len(keys), 1000):
@@ -73,6 +146,21 @@ def delete_prefix(prefix: str) -> None:
             raise RuntimeError("Could not remove all temporary upload chunks.")
 
 
+def _signed_url_signature(storage_key: str, expires: int, download: bool, filename: str) -> str:
+    message = f"{storage_key}\n{expires}\n{int(download)}\n{filename}".encode()
+    return hmac.new(settings.jwt_secret.encode(), message, hashlib.sha256).hexdigest()
+
+
+def verify_signed_url(storage_key: str, expires: int, download: bool, filename: str, signature: str) -> bool:
+    if expires < int(time.time()):
+        return False
+    try:
+        expected = _signed_url_signature(storage_key, expires, download, filename)
+    except (AttributeError, TypeError):
+        return False
+    return hmac.compare_digest(expected, signature)
+
+
 def signed_download_url(
     storage_key: str,
     expires_seconds: int = 3600,
@@ -80,19 +168,32 @@ def signed_download_url(
     download: bool = False,
     download_filename: str | None = None,
 ) -> str:
-    params = {"Bucket": settings.storage_bucket, "Key": storage_key}
-    if download:
-        # Tell S3-compatible storage to return the rendered file as an
-        # attachment. Without this, browsers commonly open MP4 files inline.
-        filename = download_filename or Path(storage_key).name or "captioned-video.mp4"
-        params.update(
-            {
+    if settings.storage_provider != "modal":
+        params = {"Bucket": settings.storage_bucket, "Key": storage_key}
+        if download:
+            filename = download_filename or Path(storage_key).name or "captioned-video.mp4"
+            params.update({
                 "ResponseContentDisposition": f'attachment; filename="{filename}"',
                 "ResponseContentType": "video/mp4",
-            }
+            })
+        return _client().generate_presigned_url(
+            "get_object", Params=params, ExpiresIn=expires_seconds,
         )
-    return _client().generate_presigned_url(
-        "get_object",
-        Params=params,
-        ExpiresIn=expires_seconds,
-    )
+
+    filename = download_filename or ""
+    expires = int(time.time()) + expires_seconds
+    signature = _signed_url_signature(storage_key, expires, download, filename)
+    query = urlencode({
+        "expires": expires,
+        "download": int(download),
+        "filename": filename,
+        "signature": signature,
+    })
+    base_url = settings.backend_url.rstrip("/")
+    return f"{base_url}/api/storage/{quote(storage_key, safe='/')}?{query}"
+
+
+def storage_status() -> bool:
+    if settings.storage_provider == "modal":
+        return _modal_root().is_dir() and os.access(_modal_root(), os.R_OK | os.W_OK)
+    return bool(settings.storage_bucket and settings.storage_access_key and settings.storage_secret_key)

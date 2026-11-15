@@ -30,6 +30,11 @@ try {
     if ($LASTEXITCODE -ne 0) {
         throw "Could not configure Modal Secrets. Sign in with: .\.venv-modal\Scripts\python.exe -m modal token new"
     }
+    # Copy this app's R2 video, export, and upload-chunk objects before
+    # switching the deployed app to the Modal Volume. The migration is
+    # resumable and marks completion in the Volume.
+    & $deployPython -m modal run modal_app.py::migrate_legacy_storage
+    if ($LASTEXITCODE -ne 0) { throw "Legacy storage migration failed; deployment stopped." }
     & $deployPython -m modal run modal_app.py::migrate
     if ($LASTEXITCODE -ne 0) { throw "Database migration failed; deployment stopped." }
     & $deployPython -m modal deploy modal_app.py

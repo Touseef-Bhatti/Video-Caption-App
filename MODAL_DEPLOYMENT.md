@@ -1,8 +1,9 @@
 # Deploy the video caption app on Modal
 
 Modal hosts the Flutter web frontend, FastAPI, transcription workers, video
-export workers, and scheduled cleanup. Keep the existing PostgreSQL database,
-private S3-compatible video storage, and Gemini API. Local Docker Compose runs
+export workers, and scheduled cleanup. Keep the existing PostgreSQL database
+and Gemini API; private video files and resumable upload chunks live in a Modal
+Volume. Local Docker Compose runs
 FastAPI, Celery workers, Redis, and Celery Beat together for a repeatable local
 baseline.
 
@@ -34,12 +35,18 @@ Ensure `backend/.env` contains reachable production values for `DATABASE_URL`,
 `JWT_SECRET`, `GEMINI_API_KEY`, `GEMINI_MODEL`, and `STORAGE_*`. A localhost
 database or a Docker Compose hostname such as `postgres` will not be reachable
 from Modal. Preserve the existing JWT secret to keep issued login tokens valid.
-The storage credentials must also permit listing and deleting temporary
-objects under `upload-chunks/` in the existing bucket.
+The deployment migrates this app's `uploads/`, `exports/`, and `upload-chunks/`
+objects from the configured S3-compatible bucket (including Cloudflare R2)
+into the `caption-app-media` Modal Volume before deploying the new app. Keep the old
+`STORAGE_*` bucket credentials configured for this first deployment. Migration
+is resumable, checks every copied file size, and records completion in the
+Volume. The old bucket is left untouched so you can verify the app before
+removing its credentials or data.
 
 Secrets are excluded from the container build. Modal overrides the old hosting
-settings `ENVIRONMENT`, `JOB_BACKEND`, `CHUNK_STORAGE_BACKEND`, and
-`TEMP_STORAGE_DIR`. The API discovers its Modal URL for password reset links
+settings `ENVIRONMENT`, `JOB_BACKEND`, `CHUNK_STORAGE_BACKEND`,
+`STORAGE_PROVIDER=modal`, `MODAL_STORAGE_PATH`, and `TEMP_STORAGE_DIR`. The API
+discovers its Modal URL for password reset links
 and browser access. For a custom domain, configure it in Modal and include
 `PUBLIC_APP_URL=https://your-domain` in the secret before redeploying.
 
@@ -101,10 +108,28 @@ check cancellation before beginning work. Startup of a web container never
 marks separate workers as interrupted. Scheduled recovery checks Modal call
 results before marking unfinished database jobs as failed.
 
-Upload chunks are stored privately in the existing bucket, so a different API
-container can resume and assemble them. Containers only use local disk while
-receiving, validating, or rendering files. Chunks are removed after completion
-or cancellation; inactive upload sessions expire after the configured retention.
+Upload chunks, source videos, and exports are stored in the private Modal
+Volume, so other API and worker containers can access them. Downloads use
+short-lived signed URLs served by the API, including byte-range responses for
+video preview and seeking. Containers use local disk while validating and
+rendering files. Chunks are removed after completion or cancellation; inactive
+upload sessions expire after the configured retention.
+
+## Region and storage location
+
+The web endpoint and background functions run and route through `ap-south`
+(Mumbai), the closest Modal routing region to Pakistan. The web function uses a
+new regional name, so its public Modal URL changes after deployment. Update any
+mobile app `API_BASE_URL` override or custom-domain routing to the URL printed
+by the deployment.
+
+Modal currently stores durable Volume data in US object storage, even when the
+app runs in Mumbai. Modal also routes Function payloads larger than 2 MiB
+through US object storage. This moves file storage from Cloudflare R2 to Modal
+and moves app compute/request ingress nearer to Pakistan, but does not place
+stored media in South Asia. Narrow Mumbai region selection has a 1.75x compute
+price multiplier according to Modal's region guide. See [region selection](https://modal.com/docs/guide/region-selection)
+and [data residency](https://modal.com/docs/guide/data-residency).
 
 ## GPU validation and CPU alternative
 

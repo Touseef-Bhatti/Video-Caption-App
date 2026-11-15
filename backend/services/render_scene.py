@@ -3,7 +3,7 @@ import hashlib
 import json
 
 RENDERER_VERSION = "flutter-scene-v8"
-RENDER_PIPELINE_VERSION = "chunked-10s-4workers-v1"
+RENDER_PIPELINE_VERSION = "chunked-10s-4workers-h264-v2"
 FPS = 15
 
 

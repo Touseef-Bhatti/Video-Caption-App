@@ -16,7 +16,10 @@ class ModalTask:
     def delay(self, *args, **kwargs):
         import modal
 
-        function = modal.Function.from_name(get_settings().modal_app_name, self.name)
+        settings = get_settings()
+        function = modal.Function.from_name(
+            settings.modal_app_name, self.name + settings.modal_function_suffix
+        )
         if self.name == "rerender_project_job" and len(args) >= 5:
             resolution, fps = int(args[3]), int(args[4])
             gpu_policy = os.environ.get("MODAL_RENDER_GPU", "auto").lower()

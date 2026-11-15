@@ -20,6 +20,7 @@ from routes import (
     usage_routes,
     diagnostic_routes,
     template_routes,
+    storage_routes,
 )
 from workers.tasks import recover_orphaned_jobs
 
@@ -56,6 +57,7 @@ app.include_router(chunked_upload_routes.router)
 app.include_router(usage_routes.router)
 app.include_router(diagnostic_routes.router)
 app.include_router(template_routes.router)
+app.include_router(storage_routes.router)
 
 
 @app.on_event("startup")

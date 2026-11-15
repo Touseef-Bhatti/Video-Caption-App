@@ -16,6 +16,8 @@ external set captionLoad(JSFunction value);
 external set captionFrame(JSFunction value);
 @JS('captionSetTime')
 external set captionSetTime(JSFunction value);
+@JS('captionVisualStateKey')
+external set captionVisualStateKey(JSFunction value);
 @JS('captionReady')
 external set captionReady(JSBoolean value);
 
@@ -43,6 +45,14 @@ class _RendererState extends State<_Renderer> {
     captionFrame = ((JSNumber seconds) => capture(seconds.toDartDouble).toJS).toJS;
     captionSetTime =
         ((JSNumber seconds) => setFrameTime(seconds.toDartDouble).toJS).toJS;
+    captionVisualStateKey = ((JSNumber seconds) => jsonEncode(
+      CaptionScene.visualStateKey(
+        transcript!, scene!['style_preset'] as String,
+        StyleOverrides.fromJson(scene!['style_overrides'] as Map<String, dynamic>?),
+        seconds.toDartDouble,
+        (scene!['adaptive_presets'] as List<dynamic>).cast<String>().toSet(),
+      ),
+    ).toJS).toJS;
     captionReady = true.toJS;
   }
 

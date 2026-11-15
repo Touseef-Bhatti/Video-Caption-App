@@ -234,7 +234,7 @@ def rerender_project_job(
     video: Video = project.video
     caption = session.query(Caption).filter(Caption.project_id == project.id).one_or_none()
     diagnostics = {
-        "schema_version": 1,
+        "schema_version": 3,
         "job_type": "edited_rerender",
         "pipeline_phases_seconds": {},
     }

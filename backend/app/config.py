@@ -5,6 +5,7 @@ explicit allowlist of config exposed via GET /api/config/public.
 """
 from functools import lru_cache
 from typing import Literal
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -27,6 +28,7 @@ class Settings(BaseSettings):
     # Celery is retained for local Compose; Modal deployments need no Redis.
     job_backend: Literal["celery", "modal"] = "celery"
     modal_app_name: str = "video-caption-app"
+    modal_function_suffix: str = ""
     chunk_storage_backend: Literal["local", "object_storage"] = "local"
 
     gemini_api_key: str
@@ -36,16 +38,39 @@ class Settings(BaseSettings):
     gemini_chunk_seconds: int = 600
     gemini_chunk_overlap_seconds: int = 5
 
-    storage_provider: str = "s3"
+    storage_provider: Literal["s3", "modal"] = "s3"
     storage_bucket: str = "caption-app-storage"
     storage_access_key: str = ""
     storage_secret_key: str = ""
     storage_region: str = "auto"
     storage_endpoint_url: str = ""
+    modal_storage_path: str = "/mnt/modal-storage"
+    modal_storage_volume: str = "caption-app-media"
 
     max_video_duration_seconds: int = 3600
     max_upload_size_mb: int = 2048
     allowed_video_mime_types: str = "video/mp4,video/quicktime,video/x-matroska,video/webm"
+
+    ffmpeg_threads: int = Field(default=4, ge=1, le=16)
+    ffmpeg_filter_threads: int | None = Field(default=None, ge=1, le=16)
+    h264_crf: int = Field(default=23, ge=0, le=51)
+    h264_maxrate: str = "2500k"
+    h264_bufsize: str = "5000k"
+    caption_render_strategy: Literal["legacy", "adaptive"] = "legacy"
+
+    @model_validator(mode="after")
+    def default_filter_threads(self):
+        if self.ffmpeg_filter_threads is None:
+            self.ffmpeg_filter_threads = self.ffmpeg_threads
+        return self
+
+    @field_validator("h264_maxrate", "h264_bufsize")
+    @classmethod
+    def valid_bitrate(cls, value: str) -> str:
+        import re
+        if not re.fullmatch(r"[1-9][0-9]*[kKmM]?", value):
+            raise ValueError("must be a positive FFmpeg bitrate (for example, 2500k)")
+        return value
 
     temp_storage_dir: str = "/tmp/caption_app"
     temp_file_retention_minutes: int = 60

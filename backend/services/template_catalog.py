@@ -52,6 +52,14 @@ LEGACY_ALIASES = {
     "elegant": "cinematic",
 }
 
+# Only these catalog presets have no motion in the shared Flutter scene.
+# All other presets use the legacy screenshot path in adaptive renders.
+ADAPTIVE_STATIC_PRESETS = frozenset({
+    "podcast_interview", "simple_white", "clean_dark", "soft_pastel",
+    "warm_aesthetic", "elegant_gold", "paper_note", "soft_shadow",
+    "sage_minimal", "rose_elegant", "mono_clean", "blue_quiet",
+})
+
 _supported_settings = {
     "primary_color": {"type": "color", "format": "#RRGGBB"},
     "highlight_color": {"type": "color", "format": "#RRGGBB"},

@@ -61,6 +61,39 @@ double captionPositionY(String position) => switch (position) {
       _ => 0.82,
     };
 
+class _CaptionFrameState {
+  const _CaptionFrameState(this.time, this.segmentIndex, this.segment,
+      this.words, this.activeWord, this.visibleRowIndex, this.visibleWords);
+
+  final double time;
+  final int segmentIndex;
+  final CaptionSegment? segment;
+  final List<CaptionWord> words;
+  final int activeWord;
+  final int visibleRowIndex;
+  final List<int> visibleWords;
+}
+
+_CaptionFrameState _resolveFrameState(CaptionTranscript transcript, double time) {
+  final t = (time * captionFramesPerSecond + 0.000001).floor() /
+      captionFramesPerSecond;
+  final segmentIndex = transcript.segments.indexWhere(
+      (candidate) => t >= candidate.start && t < candidate.end);
+  if (segmentIndex < 0) {
+    return _CaptionFrameState(t, -1, null, const [], -1, -1, const []);
+  }
+  final segment = transcript.segments[segmentIndex];
+  final words = segment.words.isEmpty ? _wordsFromSegment(segment) : segment.words;
+  final active = words.indexWhere((word) => t >= word.start && t < word.end);
+  final wordRows = captionWordGroups(words);
+  var rowIndex = wordRows.lastIndexWhere(
+      (indices) => t >= words[indices.first].start);
+  if (rowIndex < 0) rowIndex = 0;
+  final visibleWords = wordRows.isEmpty ? <int>[] : wordRows[rowIndex];
+  return _CaptionFrameState(
+      t, segmentIndex, segment, words, active, rowIndex, visibleWords);
+}
+
 /// The ONLY caption drawing implementation, used by the editor and the
 /// headless export entrypoint. Layout uses a 1080-high design canvas; resizing
 /// the editor scales the entire composition, never reflows or restyles it.
@@ -83,17 +116,30 @@ class CaptionScene extends StatelessWidget {
   final void Function(double x, double y, double scale, double rotationDegrees)?
       onTransformChanged;
 
+  /// Uses the scene's frame selection path, including its 15 fps quantization.
+  static Map<String, String> visualStateKey(
+      CaptionTranscript transcript, String presetId, StyleOverrides overrides,
+      double time, Set<String> staticPresets) {
+    final state = _resolveFrameState(transcript, time);
+    final segment = state.segment;
+    if (segment == null) return const {'mode': 'blank', 'key': 'blank'};
+    final preset = presetInfoFor(segment.stylePreset ?? presetId);
+    final motionEnabled = segment.motionEnabled ?? overrides.motionEnabled;
+    if (!staticPresets.contains(preset.id) || motionEnabled ||
+        preset.motion != 'none') {
+      return {'mode': 'legacy', 'key': 'frame:${state.time}'};
+    }
+    return {
+      'mode': state.activeWord < 0 ? 'static' : 'word_highlight',
+      'key': '${state.segmentIndex}:${state.visibleRowIndex}:${state.activeWord}',
+    };
+  }
+
   @override
   Widget build(BuildContext context) {
-    final t = (time * captionFramesPerSecond + 0.000001).floor() /
-        captionFramesPerSecond;
-    CaptionSegment? segment;
-    for (final candidate in transcript.segments) {
-      if (t >= candidate.start && t < candidate.end) {
-        segment = candidate;
-        break;
-      }
-    }
+    final state = _resolveFrameState(transcript, time);
+    final t = state.time;
+    final segment = state.segment;
     if (segment == null) return const SizedBox.expand();
     final seg = segment;
     final activePresetId = seg.stylePreset ?? presetId;
@@ -106,14 +152,9 @@ class CaptionScene extends StatelessWidget {
         .clamp(0.05, 0.95);
     final lineScale = seg.scale ?? overrides.scale;
     final lineRotation = seg.rotationDegrees ?? overrides.rotationDegrees;
-    final words = seg.words.isEmpty ? _wordsFromSegment(seg) : seg.words;
-    final active = words.indexWhere((w) => t >= w.start && t < w.end);
-    final wordRows = captionWordGroups(words);
-    var visibleRowIndex = wordRows.lastIndexWhere(
-      (indices) => t >= words[indices.first].start,
-    );
-    if (visibleRowIndex < 0) visibleRowIndex = 0;
-    final visibleWords = wordRows.isEmpty ? <int>[] : wordRows[visibleRowIndex];
+    final words = state.words;
+    final active = state.activeWord;
+    final visibleWords = state.visibleWords;
     final rtl = captionTextIsRtl(seg.text, transcript.language);
     final languageFont = captionFontForText(seg.text, transcript.language);
     final font = seg.fontFamily == 'auto'

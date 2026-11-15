@@ -19,13 +19,17 @@ import os
 from pathlib import Path
 import re
 import shlex
+import struct
 import subprocess
 import threading
 import time
 from urllib.parse import urlparse
+import zlib
 
+from app.config import get_settings
 from services.ffmpeg_service import QUALITY_PRESETS, output_dimensions, probe_video
 from services.render_scene import FPS, RENDERER_VERSION, RENDER_PIPELINE_VERSION
+from services.template_catalog import ADAPTIVE_STATIC_PRESETS
 from services.video_encoder import encoder_options
 
 logger = logging.getLogger(__name__)
@@ -68,7 +72,7 @@ class _SceneRuntime:
             browser_args.extend(["--single-process", "--no-zygote"])
         self.browser = self.playwright.chromium.launch(
             headless=True,
-            executable_path="/usr/bin/chromium",
+            executable_path=os.environ.get("CAPTION_CHROMIUM_EXECUTABLE", "/usr/bin/chromium"),
             args=browser_args,
         )
         self.page = self.browser.new_page(
@@ -165,13 +169,19 @@ def scene_browser(width, height):
 
 def _capture_overlay_chunk(snapshot: dict, overlay_width: int, overlay_height: int,
                            canvas_scale: float, start_frame: int, end_frame: int,
-                           overlay_path: Path, log_path: Path) -> dict:
+                           overlay_path: Path, log_path: Path,
+                           strategy: str = "legacy") -> dict:
     """Capture one frame-aligned time range in its own Chromium worker."""
     started = time.perf_counter()
     overlay_cmd = ["ffmpeg", "-y", "-f", "image2pipe", "-vcodec", "png",
                    "-framerate", str(FPS), "-i", "pipe:0", "-an", "-c:v", "ffv1",
                    "-pix_fmt", "bgra", "-threads", "1", str(overlay_path)]
     capture_seconds = 0.0
+    screenshot_seconds = 0.0
+    screenshots_captured = 0
+    frames_reused = 0
+    blank_frames = 0
+    mode_counts = {"blank": 0, "static": 0, "word_highlight": 0, "legacy": 0}
     pipe_write_seconds = 0.0
     pipe_bytes = 0
     browser_ready_seconds = 0.0
@@ -190,10 +200,21 @@ def _capture_overlay_chunk(snapshot: dict, overlay_width: int, overlay_height: i
             process = subprocess.Popen(overlay_cmd, stdin=subprocess.PIPE,
                                        stdout=subprocess.DEVNULL, stderr=log)
             ffmpeg_start_seconds = time.perf_counter() - ffmpeg_started
+            frame_cache = {}
             for frame in range(start_frame, end_frame):
                 capture_started = time.perf_counter()
-                frame_bytes = capture_frames(page, frame, 1)[0]
+                frame_bytes, mode, captured, screenshot_time = capture_overlay_png(
+                    page, frame, strategy, frame_cache,
+                    overlay_width, overlay_height)
                 capture_seconds += time.perf_counter() - capture_started
+                screenshot_seconds += screenshot_time
+                mode_counts[mode] += 1
+                if captured:
+                    screenshots_captured += 1
+                elif mode == "blank":
+                    blank_frames += 1
+                else:
+                    frames_reused += 1
                 pipe_bytes += len(frame_bytes)
                 write_started = time.perf_counter()
                 process.stdin.write(frame_bytes)
@@ -214,6 +235,12 @@ def _capture_overlay_chunk(snapshot: dict, overlay_width: int, overlay_height: i
             "scene_load_seconds": scene_load_seconds,
             "ffmpeg_start_seconds": ffmpeg_start_seconds,
             "capture_seconds": capture_seconds,
+            "screenshot_seconds": screenshot_seconds,
+            "screenshots_captured": screenshots_captured,
+            "frames_reused": frames_reused,
+            "blank_frames": blank_frames,
+            "mode_counts": mode_counts,
+            "strategy": strategy,
             "pipe_write_seconds": pipe_write_seconds,
             "encoder_drain_seconds": encoder_drain_seconds,
             "total_seconds": time.perf_counter() - started,
@@ -224,19 +251,21 @@ def _capture_overlay_chunk(snapshot: dict, overlay_width: int, overlay_height: i
         if process is not None and process.poll() is None:
             process.kill()
             process.wait()
+        overlay_path.unlink(missing_ok=True)
         raise
 
 
 def _capture_overlay_worker(snapshot: dict, overlay_width: int, overlay_height: int,
                             canvas_scale: float, worker_index: int,
-                            chunks: list[tuple[int, int, Path, Path]]) -> list[dict]:
+                            chunks: list[tuple[int, int, Path, Path]],
+                            strategy: str = "legacy") -> list[dict]:
     """Reuse one Chromium instance while this worker renders its assigned chunks."""
     results = []
     try:
         for start_frame, end_frame, overlay_path, log_path in chunks:
             result = _capture_overlay_chunk(
                 snapshot, overlay_width, overlay_height, canvas_scale,
-                start_frame, end_frame, overlay_path, log_path,
+                start_frame, end_frame, overlay_path, log_path, strategy,
             )
             result["worker_index"] = worker_index
             results.append(result)
@@ -256,6 +285,7 @@ def load_scene(page, snapshot, canvas_scale=1.0):
         raise ValueError("Caption renderer version changed. Please render again.")
     render_snapshot = dict(snapshot)
     render_snapshot["canvas_scale"] = canvas_scale
+    render_snapshot["adaptive_presets"] = sorted(ADAPTIVE_STATIC_PRESETS)
     page.evaluate("scene => window.captionLoad(scene)", json.dumps(render_snapshot, ensure_ascii=False))
 
 
@@ -277,6 +307,45 @@ def capture_frames(page, start_frame: int, frame_count: int) -> list[bytes]:
         page.evaluate("t => window.captionSetTime(t)", frame / FPS)
         frames.append(page.screenshot(type="png", omit_background=True, scale="css"))
     return frames
+
+
+def _transparent_png(width: int, height: int) -> bytes:
+    """A blank RGBA overlay for caption-free slots, without Chromium capture."""
+    def chunk(kind: bytes, data: bytes) -> bytes:
+        return (struct.pack(">I", len(data)) + kind + data +
+                struct.pack(">I", zlib.crc32(kind + data) & 0xffffffff))
+
+    raw = (b"\x00" + b"\x00" * (width * 4)) * height
+    return (b"\x89PNG\r\n\x1a\n" +
+            chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 6, 0, 0, 0)) +
+            chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b""))
+
+
+def capture_overlay_png(page, frame: int, strategy: str, cache: dict,
+                        width: int, height: int) -> tuple[bytes, str, bool, float]:
+    """Choose the PNG for one slot; the scene alone decides visual identity."""
+    if strategy == "legacy":
+        started = time.perf_counter()
+        data = capture_frames(page, frame, 1)[0]
+        return data, "legacy", True, time.perf_counter() - started
+    state = json.loads(page.evaluate(
+        "t => window.captionVisualStateKey(t)", frame / FPS))
+    mode, key = state["mode"], state["key"]
+    if mode == "legacy":
+        cache.clear()
+        started = time.perf_counter()
+        data = capture_frames(page, frame, 1)[0]
+        return data, mode, True, time.perf_counter() - started
+    if cache.get("key") == key:
+        return cache["bytes"], mode, False, 0.0
+    if mode == "blank":
+        data = _transparent_png(width, height)
+        cache.update(key=key, bytes=data)
+        return data, mode, False, 0.0
+    started = time.perf_counter()
+    data = capture_frames(page, frame, 1)[0]
+    cache.update(key=key, bytes=data)
+    return data, mode, True, time.perf_counter() - started
 
 
 def _ffmpeg_progress(log_path: Path) -> dict:
@@ -320,23 +389,73 @@ def _overlay_dimensions(width: int, height: int, maximum: int = 720) -> tuple[in
     return max(2, int(width * scale) // 2 * 2), max(2, int(height * scale) // 2 * 2)
 
 
+def _scaled_bitrate(value: str, pixels: int) -> str:
+    """Scale the default bitrate by pixels, with an 8x ceiling at 4K and above."""
+    suffix = value[-1] if value[-1].lower() in {"k", "m"} else ""
+    amount = int(value[:-1] if suffix else value)
+    factor = min(8.0, max(1.0, pixels / 921600))
+    return f"{round(amount * factor)}{suffix}"
+
+
+def _composite_command(video_path: Path, overlay_path: Path, out_path: Path,
+                       graph: str, duration: float, width: int, height: int,
+                       output_fps: float, quality: str = "standard",
+                       encoder_preset: str | None = None,
+                       encoder_crf: int | str | None = None) -> tuple[list[str], dict]:
+    settings = get_settings()
+    q = QUALITY_PRESETS.get(quality, QUALITY_PRESETS["standard"])
+    preset = encoder_preset if encoder_preset is not None else q["preset"]
+    crf = (encoder_crf if encoder_crf is not None else
+           settings.h264_crf if "h264_crf" in settings.model_fields_set else
+           q["crf"] if quality == "high" else settings.h264_crf)
+    video_codec, video_encoder_args = encoder_options(quality, preset, str(crf))
+    nvenc_cq = encoder_crf if encoder_crf is not None else q["crf"]
+    if video_codec == "h264_nvenc":
+        video_encoder_args[video_encoder_args.index("-cq") + 1] = str(nvenc_cq)
+    encoder_threads = settings.ffmpeg_threads if video_codec == "libx264" else None
+    filter_threads = settings.ffmpeg_filter_threads if video_codec == "libx264" else None
+    maxrate = bufsize = None
+    if video_codec == "libx264":
+        pixels = width * height
+        explicit_rate = "h264_maxrate" in settings.model_fields_set
+        explicit_buffer = "h264_bufsize" in settings.model_fields_set
+        apply_cap = ((quality != "high" and (pixels > 921600 or output_fps <= 30))
+                     or explicit_rate or explicit_buffer)
+        if apply_cap:
+            maxrate = (settings.h264_maxrate if explicit_rate or pixels <= 921600 else
+                       _scaled_bitrate(settings.h264_maxrate, pixels))
+            bufsize = (settings.h264_bufsize if explicit_buffer or pixels <= 921600 else
+                       _scaled_bitrate(settings.h264_bufsize, pixels))
+            video_encoder_args += ["-maxrate", maxrate, "-bufsize", bufsize]
+    cmd = ["ffmpeg", "-y", "-i", str(video_path), "-i", str(overlay_path)]
+    if filter_threads is not None:
+        cmd += ["-filter_complex_threads", str(filter_threads)]
+    cmd += ["-filter_complex", graph, "-map", "[out]", "-map", "0:a?",
+            "-fps_mode", "passthrough", *video_encoder_args]
+    if encoder_threads is not None:
+        cmd += ["-threads", str(encoder_threads)]
+    cmd += ["-c:a", "copy", "-t", str(duration), "-movflags", "+faststart",
+            str(out_path)]
+    return cmd, {"video_codec": video_codec, "preset": preset if video_codec == "libx264" else
+                 ("p6" if quality == "high" else "p4"),
+                 "crf": str(crf) if video_codec == "libx264" else None,
+                 "cq": str(nvenc_cq) if video_codec == "h264_nvenc" else None,
+                 "encoder_threads": encoder_threads, "filter_complex_threads": filter_threads,
+                 "maxrate": maxrate, "bufsize": bufsize}
+
+
 def render_scene(video_path: Path, snapshot: dict, out_path: Path,
                  quality="standard", progress=None, probe=None,
                  output_resolution=0, output_fps=0,
                  encoder_preset=None, encoder_crf=None,
                  metrics: dict | None = None) -> Path:
+    strategy = get_settings().caption_render_strategy
     probe = probe or probe_video(video_path)
     output_resolution = output_resolution or 0
     output_fps = output_fps or probe.frame_rate or 30
     width, height = output_dimensions(
         probe.width, probe.height, snapshot["aspect_ratio"], output_resolution)
     overlay_width, overlay_height = _overlay_dimensions(width, height)
-    q = QUALITY_PRESETS.get(quality, QUALITY_PRESETS["standard"])
-    preset = encoder_preset or q["preset"]
-    crf = encoder_crf or q["crf"]
-    video_codec, video_encoder_args = encoder_options(quality, preset, crf)
-    encoder_threads = int(os.environ.get("CAPTION_ENCODER_THREADS", "1"))
-    filter_threads = int(os.environ.get("CAPTION_FILTER_THREADS", "1"))
     count = max(1, math.ceil(probe.duration_seconds * FPS))
     overlay_path = out_path.with_name(out_path.stem + ".caption-overlay.mkv")
     caption_chain = f"[1:v]scale={width}:{height}:flags=lanczos,format=rgba[caption];"
@@ -354,19 +473,18 @@ def render_scene(video_path: Path, snapshot: dict, out_path: Path,
         graph = (f"[0:v]scale={width}:{height}:flags=lanczos,setsar=1,setpts=PTS-STARTPTS[video];{caption_chain}"
                  "[video][caption]overlay=0:0:eof_action=repeat:repeatlast=1:"
                  "shortest=0:format=auto,format=yuv420p[out]")
-    cmd = ["ffmpeg", "-y", "-threads", "1", "-i", str(video_path), "-i", str(overlay_path),
-           "-filter_complex_threads", str(filter_threads), "-filter_complex", graph, "-map", "[out]",
-           "-map", "0:a?", "-fps_mode", "passthrough", *video_encoder_args,
-           "-threads", str(encoder_threads), "-c:a", "copy",
-           "-t", str(probe.duration_seconds), "-movflags", "+faststart",
-           str(out_path)]
+    cmd, encode = _composite_command(
+        video_path, overlay_path, out_path, graph, probe.duration_seconds,
+        width, height, probe.frame_rate or output_fps, quality, encoder_preset, encoder_crf)
     sanitized_cmd = _sanitized_command(cmd, video_path, out_path)
     if metrics is not None:
         metrics.update({
-            "schema_version": 1,
+            "schema_version": 3,
             "renderer_version": RENDERER_VERSION,
             "render_pipeline_version": RENDER_PIPELINE_VERSION,
-            "capture_method": "chromium_transparent_png_screenshot",
+            "capture_method": ("chromium_transparent_png_screenshot" if strategy == "legacy"
+                               else "chromium_screenshot_with_visual_state_reuse"),
+            "capture_strategy": strategy,
             "input": {
                 "width": probe.width,
                 "height": probe.height,
@@ -394,14 +512,17 @@ def render_scene(video_path: Path, snapshot: dict, out_path: Path,
                 "command": sanitized_cmd,
                 "command_text": shlex.join(sanitized_cmd),
                 "filter_graph": graph,
-                "filter_complex_threads": filter_threads,
+                "filter_complex_threads": encode["filter_complex_threads"],
                 "overlay_input_format": "ffv1/matroska/bgra",
-                "video_codec": video_codec,
-                "preset": preset if video_codec == "libx264" else ("p6" if quality == "high" else "p4"),
-                "crf": crf if video_codec == "libx264" else None,
-                "cq": crf if video_codec == "h264_nvenc" else None,
+                "video_codec": encode["video_codec"],
+                "encoder": encode["video_codec"],
+                "preset": encode["preset"],
+                "crf": encode["crf"],
+                "cq": encode["cq"],
+                "maxrate": encode["maxrate"],
+                "bufsize": encode["bufsize"],
                 "pixel_format": "yuv420p",
-                "encoder_threads": encoder_threads,
+                "encoder_threads": encode["encoder_threads"],
                 "audio_codec": "copy_source",
                 "movflags": "+faststart",
             },
@@ -431,7 +552,7 @@ def render_scene(video_path: Path, snapshot: dict, out_path: Path,
             futures = [
                 pool.submit(
                     _capture_overlay_worker, snapshot, overlay_width, overlay_height,
-                    overlay_width / width, worker_index, assignments,
+                    overlay_width / width, worker_index, assignments, strategy,
                 )
                 for worker_index, assignments in enumerate(worker_chunks)
             ]
@@ -467,6 +588,7 @@ def render_scene(video_path: Path, snapshot: dict, out_path: Path,
         )
         if merge_result.returncode != 0:
             logger.error("Caption overlay chunk merge failed: %s", merge_result.stderr[-4000:])
+            overlay_path.unlink(missing_ok=True)
             raise RuntimeError("Caption overlay chunks could not be merged in order.")
         chunk_merge_seconds = time.perf_counter() - merge_started
     finally:
@@ -485,14 +607,38 @@ def render_scene(video_path: Path, snapshot: dict, out_path: Path,
     browser_ready_seconds = max(chunk["browser_ready_seconds"] for chunk in chunk_results)
     scene_load_seconds = max(chunk["scene_load_seconds"] for chunk in chunk_results)
     ffmpeg_start_seconds = max(chunk["ffmpeg_start_seconds"] for chunk in chunk_results)
+    mode_counts = {mode: sum(chunk["mode_counts"][mode] for chunk in chunk_results)
+                   for mode in ("blank", "static", "word_highlight", "legacy")}
+    first_worker_chunks = {}
+    for chunk in chunk_results:
+        first_worker_chunks.setdefault(chunk["worker_index"], chunk)
+    capture_diagnostics = {
+        "strategy": strategy,
+        "frames_total": count,
+        "screenshots_captured": sum(chunk["screenshots_captured"] for chunk in chunk_results),
+        "frames_reused": sum(chunk["frames_reused"] for chunk in chunk_results),
+        "blank_frames": sum(chunk["blank_frames"] for chunk in chunk_results),
+        "mode_counts": mode_counts,
+        "chromium_startup_seconds": round(sum(
+            chunk["browser_ready_seconds"] for chunk in first_worker_chunks.values()), 6),
+        "screenshot_seconds": round(sum(
+            chunk["screenshot_seconds"] for chunk in chunk_results), 6),
+    }
     composite_started = time.perf_counter()
-    with log_path.open("wb") as log:
-        composite_result = subprocess.run(
-            cmd, stdout=subprocess.DEVNULL, stderr=log,
-            timeout=max(180, probe.duration_seconds * 3),
-        )
+    try:
+        with log_path.open("wb") as log:
+            composite_result = subprocess.run(
+                cmd, stdout=subprocess.DEVNULL, stderr=log,
+                timeout=max(180, probe.duration_seconds * 3),
+            )
+    except Exception:
+        overlay_path.unlink(missing_ok=True)
+        out_path.unlink(missing_ok=True)
+        raise
     return_code = composite_result.returncode
     if return_code != 0:
+        overlay_path.unlink(missing_ok=True)
+        out_path.unlink(missing_ok=True)
         raise RuntimeError("Video compositing failed; see the worker render log.")
     try:
         overlay_path.unlink(missing_ok=True)
@@ -538,8 +684,10 @@ def render_scene(video_path: Path, snapshot: dict, out_path: Path,
         metrics["ffmpeg"].update({
             "return_code": return_code,
             "reported_progress": ffmpeg_progress,
+            "output_bytes": output_bytes,
         })
         metrics.update({
+            "capture": capture_diagnostics,
             "phases_seconds": {key: round(value, 6) for key, value in phases.items()},
             "total_seconds": round(total_seconds, 6),
             "accounted_seconds": round(accounted_seconds, 6),
@@ -588,7 +736,7 @@ def render_scene(video_path: Path, snapshot: dict, out_path: Path,
         "parallel_workers=%d chunks=%d chunk_capture_wall_s=%.3f "
         "frame_capture_worker_s=%.3f pipe_write_worker_s=%.3f overlay_merge_s=%.3f "
         "output_probe_s=%.3f total_s=%.3f",
-        count, FPS, output_bytes, preset, crf,
+        count, FPS, output_bytes, encode["preset"], encode["crf"],
         worker_count, len(frame_ranges), capture_wall_seconds, capture_seconds, pipe_write_seconds,
         chunk_merge_seconds, output_probe_seconds,
         total_seconds,

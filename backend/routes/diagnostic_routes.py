@@ -34,6 +34,7 @@ async def _queue_checks(settings) -> list[dict[str, str]]:
             import modal
 
             for name in ("process_video_job", "rerender_project_job"):
+                name += settings.modal_function_suffix
                 modal.Function.from_name(settings.modal_app_name, name).hydrate()
         try:
             await asyncio.to_thread(check_functions)
@@ -80,10 +81,17 @@ async def get_system_diagnostics(
 
     checks.extend(await _queue_checks(settings))
 
-    storage_configured = bool(
-        settings.storage_bucket and settings.storage_access_key and settings.storage_secret_key
-    )
-    if storage_configured:
+    if settings.storage_provider == "modal":
+        from services import storage_service
+
+        volume_ready = storage_service.storage_status()
+        checks.append(_check(
+            "Video storage",
+            "ok" if volume_ready else "error",
+            "Modal Volume is mounted and writable." if volume_ready
+            else "Modal Volume is not mounted or is not writable.",
+        ))
+    elif settings.storage_bucket and settings.storage_access_key and settings.storage_secret_key:
         def check_bucket() -> None:
             client = boto3.client(
                 "s3",
