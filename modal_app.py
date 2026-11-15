@@ -12,8 +12,8 @@ ROOT = Path(__file__).resolve().parent
 APP_NAME = os.environ.get("MODAL_APP_NAME", "video-caption-app")
 SECRET_NAME = os.environ.get("MODAL_CONFIG_SECRET", "caption-app-config")
 RENDER_GPU = os.environ.get("MODAL_RENDER_GPU", "auto")
-MODAL_REGION = "ap-south"
-FUNCTION_SUFFIX = "_ap_south"
+MODAL_REGION = "us-east"
+FUNCTION_SUFFIX = ""
 STORAGE_PATH = "/mnt/modal-storage"
 STORAGE_VOLUME_NAME = os.environ.get("MODAL_STORAGE_VOLUME", "caption-app-media")
 GPU_REQUEST = (["T4", "L4", "A10"] if RENDER_GPU.lower() == "auto"
@@ -55,7 +55,7 @@ image = (
               routing_region=MODAL_REGION, name="web" + FUNCTION_SUFFIX)
 @modal.concurrent(max_inputs=16)
 @modal.asgi_app()
-def web_ap_south():
+def web():
     os.environ.update(RUNTIME_ENV)
     # Web and API share an origin. Generate reset links for the deployed URL,
     # even when the old hosting URLs remain in the imported secret.
@@ -102,9 +102,7 @@ def rerender_project_job(
 
 @app.function(image=image, secrets=[secret], cpu=0.25, memory=512,
               schedule=modal.Period(minutes=15), timeout=600, max_containers=1,
-              # Modal schedules run through the us-east input plane. The shared
-              # Volume is distributed globally, so cleanup can still maintain
-              # files written by the ap-south processing functions.
+              # Scheduled functions use Modal's default us-east input plane.
               volumes={STORAGE_PATH: media_volume},
               name="cleanup_expired_files" + FUNCTION_SUFFIX)
 def cleanup_expired_files():

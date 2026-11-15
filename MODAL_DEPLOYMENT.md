@@ -117,18 +117,14 @@ upload sessions expire after the configured retention.
 
 ## Region and storage location
 
-The web endpoint and background functions run and route through `ap-south`
-(Mumbai), the closest Modal routing region to Pakistan. The web function uses a
-new regional name, so its public Modal URL changes after deployment. Update any
-mobile app `API_BASE_URL` override or custom-domain routing to the URL printed
-by the deployment.
+The web endpoint and background functions currently run and route through
+`us-east`. This keeps the existing Modal app URL while we defer the Mumbai
+deployment.
 
 Modal currently stores durable Volume data in US object storage, even when the
-app runs in Mumbai. Modal also routes Function payloads larger than 2 MiB
+app runs in US East. Modal also routes Function payloads larger than 2 MiB
 through US object storage. This moves file storage from Cloudflare R2 to Modal
-and moves app compute/request ingress nearer to Pakistan, but does not place
-stored media in South Asia. Narrow Mumbai region selection has a 1.75x compute
-price multiplier according to Modal's region guide. See [region selection](https://modal.com/docs/guide/region-selection)
+without moving existing R2 objects. See [region selection](https://modal.com/docs/guide/region-selection)
 and [data residency](https://modal.com/docs/guide/data-residency).
 
 ## GPU validation and CPU alternative
