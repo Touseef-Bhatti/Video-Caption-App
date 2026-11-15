@@ -102,8 +102,11 @@ def rerender_project_job(
 
 @app.function(image=image, secrets=[secret], cpu=0.25, memory=512,
               schedule=modal.Period(minutes=15), timeout=600, max_containers=1,
-              volumes={STORAGE_PATH: media_volume}, region=MODAL_REGION,
-              routing_region=MODAL_REGION, name="cleanup_expired_files" + FUNCTION_SUFFIX)
+              # Modal schedules run through the us-east input plane. The shared
+              # Volume is distributed globally, so cleanup can still maintain
+              # files written by the ap-south processing functions.
+              volumes={STORAGE_PATH: media_volume},
+              name="cleanup_expired_files" + FUNCTION_SUFFIX)
 def cleanup_expired_files():
     os.environ.update(RUNTIME_ENV)
     from workers.tasks import cleanup_expired_files as cleanup
