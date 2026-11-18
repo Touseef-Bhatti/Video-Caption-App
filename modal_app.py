@@ -5,6 +5,7 @@ Database, private object storage, and Gemini settings come from Modal Secrets.
 """
 import os
 from pathlib import Path
+from pathlib import Path
 
 import modal
 
@@ -64,8 +65,14 @@ def web():
     ).get_web_url()
     if not public_url:
         raise RuntimeError("The Modal web endpoint has no public URL.")
-    os.environ.update(BACKEND_URL=public_url, FRONTEND_URL=public_url,
-                      CORS_ALLOWED_ORIGINS=public_url)
+    frontend_url = os.environ.get(
+        "FRONTEND_URL", "https://video-caption-app.pages.dev"
+    ).rstrip("/")
+    os.environ.update(
+        BACKEND_URL=public_url,
+        FRONTEND_URL=frontend_url,
+        CORS_ALLOWED_ORIGINS=f"{public_url},{frontend_url}",
+    )
     from app.main import app as api
 
     return api

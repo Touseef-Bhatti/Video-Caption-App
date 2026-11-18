@@ -1,16 +1,29 @@
-# Deploy the video caption app on Modal
+# Deploy the backend on Modal and the frontend on Cloudflare Pages
 
-Modal hosts the Flutter web frontend, FastAPI, transcription workers, video
-export workers, and scheduled cleanup. Keep the existing PostgreSQL database
+Modal hosts FastAPI, transcription workers, video export workers, and scheduled cleanup. Cloudflare Pages hosts the Flutter web frontend. Keep the existing PostgreSQL database
 and Gemini API; private video files and resumable upload chunks live in a Modal
 Volume. Local Docker Compose runs
 FastAPI, Celery workers, Redis, and Celery Beat together for a repeatable local
 baseline.
 
-Live app: [Open Video Caption App](https://touseef12345bhatti--video-caption-app-web.us-east.modal.run/).
+Frontend: [video-caption-app.pages.dev](https://video-caption-app.pages.dev/).
+Backend API: `https://touseef12345bhatti--video-caption-app-web.us-east.modal.run`.
 Manage it in the [Modal deployment dashboard](https://modal.com/apps/touseef12345bhatti/main/deployed/video-caption-app).
-Live upload, transcription, GPU export, download, and browser playback checks
-passed; see the [deployment verification report](backend/perf-reports/modal-deployment-2026-11-11.md).
+The backend health endpoint is `https://touseef12345bhatti--video-caption-app-web.us-east.modal.run/api/health`.
+
+## Configure Cloudflare Pages
+
+Set the Pages project root to `/` and use these build settings:
+
+| Setting | Value |
+|---|---|
+| Build command | `bash scripts/build_cloudflare_pages.sh` |
+| Build output directory | `frontend/build/web` |
+| Environment variable | `API_BASE_URL=https://touseef12345bhatti--video-caption-app-web.us-east.modal.run` |
+
+The build script installs Flutter in the Pages build environment, then builds
+the web app with `API_BASE_URL` compiled in. After changing the Pages variable,
+trigger a new deployment. The Modal API allows the Pages origin through CORS.
 
 ## Deploy from PowerShell
 
@@ -27,9 +40,10 @@ Finish Modal's browser login before running the deployment script. GPU use
 requires a valid payment method in Modal. The script uploads `backend/.env`
 to the private `caption-app-config` Modal Secret, runs existing Alembic
 migrations once, and deploys `modal_app.py`. It prints the public web URL.
-The Flutter web app and `/api/*` share that URL; Flutter uses its current
-origin automatically. Build native mobile apps with
-`--dart-define=API_BASE_URL=<the Modal web URL>`.
+The Modal endpoint serves `/api/*`; Cloudflare Pages serves the Flutter app.
+The default Pages origin is allowed by CORS. For a different frontend domain,
+set `FRONTEND_URL` in the Modal secret and redeploy. Build native mobile apps
+with `--dart-define=API_BASE_URL=<the Modal web URL>`.
 
 Ensure `backend/.env` contains reachable production values for `DATABASE_URL`,
 `JWT_SECRET`, `GEMINI_API_KEY`, `GEMINI_MODEL`, and `STORAGE_*`. A localhost
