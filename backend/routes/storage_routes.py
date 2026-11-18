@@ -33,11 +33,10 @@ async def serve_storage_object(
         raise HTTPException(status_code=403, detail="This download link has expired or is invalid.")
 
     try:
-        path = storage_service.local_path(storage_key)
-        storage_service._refresh_volume()
+        path = await storage_service.snapshot_modal_file(storage_key)
     except ValueError:
         raise HTTPException(status_code=404, detail="File not found.") from None
-    if not path.is_file():
+    if path is None:
         raise HTTPException(status_code=404, detail="File not found.")
 
     size = path.stat().st_size
@@ -64,6 +63,7 @@ async def serve_storage_object(
             status_code = 206
             headers["Content-Range"] = f"bytes {start}-{end}/{size}"
         except (ValueError, TypeError):
+            path.unlink(missing_ok=True)
             raise HTTPException(
                 status_code=416,
                 detail="Requested byte range is not satisfiable.",
@@ -77,14 +77,17 @@ async def serve_storage_object(
     media_type = "video/mp4" if download else (mimetypes.guess_type(path.name)[0] or "application/octet-stream")
 
     async def file_chunks():
-        async with aiofiles.open(path, "rb") as source:
-            await source.seek(start)
-            remaining = end - start + 1
-            while remaining:
-                block = await source.read(min(_BLOCK_SIZE, remaining))
-                if not block:
-                    break
-                remaining -= len(block)
-                yield block
+        try:
+            async with aiofiles.open(path, "rb") as source:
+                await source.seek(start)
+                remaining = end - start + 1
+                while remaining:
+                    block = await source.read(min(_BLOCK_SIZE, remaining))
+                    if not block:
+                        break
+                    remaining -= len(block)
+                    yield block
+        finally:
+            path.unlink(missing_ok=True)
 
     return StreamingResponse(file_chunks(), status_code=status_code, media_type=media_type, headers=headers)

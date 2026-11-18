@@ -5,7 +5,10 @@ import hashlib
 import hmac
 import os
 import shutil
+import tempfile
+import threading
 import time
+import asyncio
 from pathlib import Path, PurePosixPath
 from urllib.parse import quote, urlencode
 
@@ -23,6 +26,11 @@ _TRANSFER_CONFIG = TransferConfig(
     max_concurrency=4,
     use_threads=True,
 )
+
+# Modal volumes reject reloads while any file on that volume is open. Keep
+# refresh/copy and mutation operations in this container mutually exclusive.
+_volume_lock = threading.Lock()
+_async_volume_lock = asyncio.Lock()
 
 
 def _client():
@@ -60,20 +68,52 @@ def _volume():
 
 def _refresh_volume() -> None:
     if settings.storage_provider == "modal":
-        _volume().reload()
+        with _volume_lock:
+            _volume().reload()
+
+
+async def snapshot_modal_file(storage_key: str) -> Path | None:
+    """Refresh a Modal Volume and copy an object off-volume for streaming."""
+    if settings.storage_provider != "modal":
+        raise RuntimeError("Modal file snapshots require Modal object storage.")
+
+    # The temporary copy lets the response stream without keeping a Volume
+    # file open, so another request can safely reload the Volume meanwhile.
+    async with _async_volume_lock:
+        _volume_lock.acquire()
+        snapshot_path: Path | None = None
+        try:
+            await _volume().reload.aio()
+            source = local_path(storage_key)
+            if not source.is_file():
+                return None
+
+            fd, snapshot_name = tempfile.mkstemp(prefix="caption-app-download-")
+            os.close(fd)
+            snapshot_path = Path(snapshot_name)
+            await asyncio.to_thread(shutil.copyfile, source, snapshot_path)
+            return snapshot_path
+        except Exception:
+            if snapshot_path is not None:
+                snapshot_path.unlink(missing_ok=True)
+            raise
+        finally:
+            _volume_lock.release()
 
 
 def _commit_volume() -> None:
     if settings.storage_provider == "modal":
-        _volume().commit()
+        with _volume_lock:
+            _volume().commit()
 
 
 def upload_file(local_file: Path, storage_key: str) -> str:
     if settings.storage_provider == "modal":
-        destination = local_path(storage_key)
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(local_file, destination)
-        _commit_volume()
+        with _volume_lock:
+            destination = local_path(storage_key)
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(local_file, destination)
+            _volume().commit()
     else:
         _client().upload_file(
             str(local_file), settings.storage_bucket, storage_key,
@@ -84,10 +124,11 @@ def upload_file(local_file: Path, storage_key: str) -> str:
 
 def download_file(storage_key: str, destination: Path) -> Path:
     if settings.storage_provider == "modal":
-        _refresh_volume()
-        source = local_path(storage_key)
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(source, destination)
+        with _volume_lock:
+            _volume().reload()
+            source = local_path(storage_key)
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(source, destination)
     else:
         _client().download_file(
             settings.storage_bucket, storage_key, str(destination),
@@ -98,26 +139,28 @@ def download_file(storage_key: str, destination: Path) -> Path:
 
 def delete_file(storage_key: str) -> None:
     if settings.storage_provider == "modal":
-        local_path(storage_key).unlink(missing_ok=True)
-        _commit_volume()
+        with _volume_lock:
+            local_path(storage_key).unlink(missing_ok=True)
+            _volume().commit()
     else:
         _client().delete_object(Bucket=settings.storage_bucket, Key=storage_key)
 
 
 def list_keys(prefix: str) -> list[str]:
     if settings.storage_provider == "modal":
-        _refresh_volume()
-        root = _modal_root()
-        base = local_path(prefix) if prefix else root
-        if base.is_file():
-            return [base.relative_to(root).as_posix()]
-        if not base.exists():
-            return []
-        return [
-            path.relative_to(root).as_posix()
-            for path in base.rglob("*")
-            if path.is_file() and not path.relative_to(root).as_posix().startswith(".modal-internal/")
-        ]
+        with _volume_lock:
+            _volume().reload()
+            root = _modal_root()
+            base = local_path(prefix) if prefix else root
+            if base.is_file():
+                return [base.relative_to(root).as_posix()]
+            if not base.exists():
+                return []
+            return [
+                path.relative_to(root).as_posix()
+                for path in base.rglob("*")
+                if path.is_file() and not path.relative_to(root).as_posix().startswith(".modal-internal/")
+            ]
 
     pages = _client().get_paginator("list_objects_v2").paginate(
         Bucket=settings.storage_bucket, Prefix=prefix,
@@ -127,12 +170,13 @@ def list_keys(prefix: str) -> list[str]:
 
 def delete_prefix(prefix: str) -> None:
     if settings.storage_provider == "modal":
-        target = local_path(prefix)
-        if target.is_dir():
-            shutil.rmtree(target)
-        else:
-            target.unlink(missing_ok=True)
-        _commit_volume()
+        with _volume_lock:
+            target = local_path(prefix)
+            if target.is_dir():
+                shutil.rmtree(target)
+            else:
+                target.unlink(missing_ok=True)
+            _volume().commit()
         return
 
     client = _client()

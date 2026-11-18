@@ -1,5 +1,6 @@
 import re
 
+import aiofiles
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from sqlalchemy import select
@@ -73,16 +74,18 @@ async def stream_export_content(
 
     settings = get_settings()
     if settings.storage_provider == "modal":
-        storage_service._refresh_volume()
-        path = storage_service.local_path(export.storage_key)
-        if not path.is_file():
+        path = await storage_service.snapshot_modal_file(export.storage_key)
+        if path is None:
             raise HTTPException(status_code=404, detail="Export file not found.")
         size = path.stat().st_size
 
-        def chunks():
-            with path.open("rb") as source:
-                while block := source.read(_DOWNLOAD_BLOCK_SIZE):
-                    yield block
+        async def chunks():
+            try:
+                async with aiofiles.open(path, "rb") as source:
+                    while block := await source.read(_DOWNLOAD_BLOCK_SIZE):
+                        yield block
+            finally:
+                path.unlink(missing_ok=True)
 
     else:
         try:
