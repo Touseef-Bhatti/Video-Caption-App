@@ -4,9 +4,12 @@ import 'package:go_router/go_router.dart';
 
 import '../providers/auth_provider.dart';
 import '../screens/auth/forgot_password_screen.dart';
+import '../screens/auth/landing_screen.dart';
 import '../screens/auth/login_screen.dart';
 import '../screens/auth/register_screen.dart';
 import '../screens/auth/splash_screen.dart';
+import '../screens/public/about_screen.dart';
+import '../screens/public/contact_screen.dart';
 import '../screens/dashboard/dashboard_screen.dart';
 import '../screens/dashboard/dashboard_shell.dart';
 import '../screens/editor/caption_editor_screen.dart';
@@ -19,7 +22,16 @@ import '../screens/settings/diagnostics_screen.dart';
 import '../screens/settings/settings_screen.dart';
 import '../screens/upload/upload_screen.dart';
 
-const _publicPaths = {'/splash', '/login', '/register', '/forgot-password'};
+const _publicPaths = {
+  '/',
+  '/index.html',
+  '/about',
+  '/contact',
+  '/splash',
+  '/login',
+  '/register',
+  '/forgot-password'
+};
 
 /// Bridges Riverpod auth state changes into go_router's refresh mechanism so
 /// the redirect re-runs on login/logout without rebuilding the whole router.
@@ -33,31 +45,52 @@ final routerProvider = Provider<GoRouter>((ref) {
   final refresh = _AuthRefresh(ref);
 
   return GoRouter(
-    initialLocation: '/splash',
+    initialLocation: '/',
     refreshListenable: refresh,
     redirect: (context, state) {
       final status = ref.read(authProvider).status;
       final path = state.matchedLocation;
 
-      if (status == AuthStatus.unknown) return path == '/splash' ? null : '/splash';
+      if (status == AuthStatus.unknown) {
+        return _publicPaths.contains(path) || path == '/splash'
+            ? null
+            : '/splash';
+      }
       if (status == AuthStatus.unauthenticated) {
-        return _publicPaths.contains(path) && path != '/splash' ? null : '/login';
+        if (path == '/splash') return '/';
+        return _publicPaths.contains(path) ? null : '/';
+      }
+      // Public site pages stay accessible whether or not a session exists.
+      if (path == '/' ||
+          path == '/index.html' ||
+          path == '/about' ||
+          path == '/contact') {
+        return null;
       }
       // authenticated
       if (_publicPaths.contains(path)) return '/dashboard';
       return null;
     },
     routes: [
+      GoRoute(path: '/', builder: (_, __) => const LandingScreen()),
+      GoRoute(path: '/index.html', builder: (_, __) => const LandingScreen()),
+      GoRoute(path: '/about', builder: (_, __) => const AboutScreen()),
+      GoRoute(path: '/contact', builder: (_, __) => const ContactScreen()),
       GoRoute(path: '/splash', builder: (_, __) => const SplashScreen()),
       GoRoute(path: '/login', builder: (_, __) => const LoginScreen()),
       GoRoute(path: '/register', builder: (_, __) => const RegisterScreen()),
-      GoRoute(path: '/forgot-password', builder: (_, __) => const ForgotPasswordScreen()),
+      GoRoute(
+          path: '/forgot-password',
+          builder: (_, __) => const ForgotPasswordScreen()),
       ShellRoute(
-        builder: (context, state, child) => DashboardShell(location: state.matchedLocation, child: child),
+        builder: (context, state, child) =>
+            DashboardShell(location: state.matchedLocation, child: child),
         routes: [
-          GoRoute(path: '/dashboard', builder: (_, __) => const DashboardScreen()),
+          GoRoute(
+              path: '/dashboard', builder: (_, __) => const DashboardScreen()),
           GoRoute(path: '/upload', builder: (_, __) => const UploadScreen()),
-          GoRoute(path: '/settings', builder: (_, __) => const SettingsScreen()),
+          GoRoute(
+              path: '/settings', builder: (_, __) => const SettingsScreen()),
           GoRoute(
             path: '/diagnostics',
             builder: (_, __) => const DiagnosticsScreen(),
@@ -68,19 +101,23 @@ final routerProvider = Provider<GoRouter>((ref) {
       ),
       GoRoute(
         path: '/processing/:jobId',
-        builder: (_, state) => ProcessingScreen(jobId: state.pathParameters['jobId']!),
+        builder: (_, state) =>
+            ProcessingScreen(jobId: state.pathParameters['jobId']!),
       ),
       GoRoute(
         path: '/editor/:projectId',
-        builder: (_, state) => CaptionEditorScreen(projectId: state.pathParameters['projectId']!),
+        builder: (_, state) =>
+            CaptionEditorScreen(projectId: state.pathParameters['projectId']!),
       ),
       GoRoute(
         path: '/preview/:projectId',
-        builder: (_, state) => PreviewScreen(projectId: state.pathParameters['projectId']!),
+        builder: (_, state) =>
+            PreviewScreen(projectId: state.pathParameters['projectId']!),
       ),
       GoRoute(
         path: '/export/:projectId',
-        builder: (_, state) => ExportScreen(projectId: state.pathParameters['projectId']!),
+        builder: (_, state) =>
+            ExportScreen(projectId: state.pathParameters['projectId']!),
       ),
     ],
   );

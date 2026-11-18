@@ -23,6 +23,7 @@ import '../../widgets/color_field.dart';
 import '../../widgets/confirm_dialog.dart';
 import '../../widgets/error_message.dart';
 import '../../widgets/processing_progress.dart';
+import '../public/public_site_widgets.dart';
 
 const _editorAccent = Color(0xFF7438F5);
 const _editorAccentSoft = Color(0xFFF0E9FF);
@@ -347,7 +348,9 @@ class _CaptionEditorScreenState extends ConsumerState<CaptionEditorScreen> {
         title: const Text('Your video is ready'),
         content: const Text('Save the rendered video to your device.'),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Close')),
+          TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('Close')),
           FilledButton.icon(
             onPressed: () => Navigator.pop(context, true),
             icon: const Icon(Icons.download),
@@ -384,6 +387,22 @@ class _CaptionEditorScreenState extends ConsumerState<CaptionEditorScreen> {
     );
   }
 
+  Widget _withWorkspaceHeader(Widget screen,
+          {required bool hasUnsavedChanges}) =>
+      Column(
+        children: [
+          PublicSiteHeader(
+            activePath: '/editor',
+            onNavigate: (path) async {
+              if (await _confirmLeave(hasUnsavedChanges) && mounted) {
+                context.go(path);
+              }
+            },
+          ),
+          Expanded(child: screen),
+        ],
+      );
+
   @override
   Widget build(BuildContext context) {
     final state = ref.watch(captionEditorProvider(widget.projectId));
@@ -400,16 +419,23 @@ class _CaptionEditorScreenState extends ConsumerState<CaptionEditorScreen> {
     if (cachedUrl != null) _attachVideo(cachedUrl);
 
     if (state.isLoading) {
-      return Scaffold(
+      return _withWorkspaceHeader(
+        Scaffold(
           appBar: AppBar(title: const Text('Edit captions')),
-          body: const Center(child: CircularProgressIndicator()));
+          body: const Center(child: CircularProgressIndicator()),
+        ),
+        hasUnsavedChanges: state.hasUnsavedChanges,
+      );
     }
     if (state.transcript == null) {
-      return Scaffold(
-        appBar: AppBar(title: const Text('Edit captions')),
-        body: ErrorMessage(
-            message: state.errorMessage ?? 'No captions found.',
-            onRetry: notifier.load),
+      return _withWorkspaceHeader(
+        Scaffold(
+          appBar: AppBar(title: const Text('Edit captions')),
+          body: ErrorMessage(
+              message: state.errorMessage ?? 'No captions found.',
+              onRetry: notifier.load),
+        ),
+        hasUnsavedChanges: state.hasUnsavedChanges,
       );
     }
 
@@ -505,363 +531,370 @@ class _CaptionEditorScreenState extends ConsumerState<CaptionEditorScreen> {
 
     return Theme(
       data: editorTheme,
-      child: PopScope(
-        canPop: !state.hasUnsavedChanges,
-        onPopInvokedWithResult: (didPop, _) async {
-          if (didPop) return;
-          if (await _confirmLeave(state.hasUnsavedChanges) && context.mounted)
-            context.go('/dashboard');
-        },
-        child: Scaffold(
-          drawer: wide
-              ? null
-              : Drawer(
-                  width: math.min(screenWidth * 0.84, 310).toDouble(),
-                  child: SafeArea(
-                    child: _EditorNavigation(
-                      selected: 'editor',
-                      extended: true,
-                      onNavigate: (path) async {
-                        Navigator.of(context).pop();
-                        if (await _confirmLeave(state.hasUnsavedChanges) &&
-                            context.mounted) context.go(path);
-                      },
-                    ),
-                  ),
-                ),
-          appBar: AppBar(
-            toolbarHeight: compactHeader ? 58 : 64,
-            title: Row(
-              children: [
-                Container(
-                  width: compactHeader ? 34 : 38,
-                  height: compactHeader ? 34 : 38,
-                  decoration: BoxDecoration(
-                    color: _editorAccent,
-                    borderRadius: BorderRadius.circular(11),
-                  ),
-                  child: const Icon(Icons.play_arrow_rounded,
-                      color: Colors.white, size: 27),
-                ),
-                SizedBox(width: compactHeader ? 8 : 12),
-                const Text('Caption Studio',
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(fontWeight: FontWeight.w700)),
-              ],
-            ),
-            leading: Builder(
-              builder: (scaffoldContext) => IconButton(
-                tooltip: wide ? 'Back to projects' : 'Open navigation',
-                icon: Icon(wide ? Icons.arrow_back : Icons.menu_rounded),
-                onPressed: wide
-                    ? () async {
-                        if (await _confirmLeave(state.hasUnsavedChanges) &&
-                            context.mounted) context.go('/dashboard');
-                      }
-                    : () => Scaffold.of(scaffoldContext).openDrawer(),
-              ),
-            ),
-            actions: [
-              if (wide) ...[
-                Container(
-                  margin: const EdgeInsets.only(right: 8),
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                  decoration: BoxDecoration(
-                    color: _editorAccentSoft,
-                    borderRadius: BorderRadius.circular(10),
-                  ),
-                  child: const Row(
-                    children: [
-                      Icon(Icons.auto_awesome_rounded,
-                          size: 17, color: _editorAccent),
-                      SizedBox(width: 7),
-                      Text('Captions ready',
-                          style: TextStyle(
-                              color: _editorAccent,
-                              fontWeight: FontWeight.w600)),
-                    ],
-                  ),
-                ),
-                OutlinedButton.icon(
-                  onPressed:
-                      _isDownloading || _isSaveRenderBusy || state.isSaving
-                          ? null
-                          : _saveDraft,
-                  icon: const Icon(Icons.save_outlined, size: 18),
-                  label: const Text('Save Draft'),
-                ),
-                const SizedBox(width: 10),
-              ],
-              if (wide || !compactHeader) ...[
-                IconButton(
-                  tooltip: 'Undo',
-                  onPressed: state.canUndo
-                      ? ref
-                          .read(
-                              captionEditorProvider(widget.projectId).notifier)
-                          .undo
-                      : null,
-                  icon: const Icon(Icons.undo_rounded),
-                ),
-                IconButton(
-                  tooltip: 'Redo',
-                  onPressed: state.canRedo
-                      ? ref
-                          .read(
-                              captionEditorProvider(widget.projectId).notifier)
-                          .redo
-                      : null,
-                  icon: const Icon(Icons.redo_rounded),
-                ),
-              ] else
-                PopupMenuButton<String>(
-                  tooltip: 'More editor actions',
-                  onSelected: (action) {
-                    if (action == 'save') _saveDraft();
-                    if (action == 'undo') {
-                      ref
-                          .read(
-                              captionEditorProvider(widget.projectId).notifier)
-                          .undo();
-                    }
-                    if (action == 'redo') {
-                      ref
-                          .read(
-                              captionEditorProvider(widget.projectId).notifier)
-                          .redo();
-                    }
-                  },
-                  itemBuilder: (_) => [
-                    const PopupMenuItem(
-                        value: 'save', child: Text('Save draft')),
-                    PopupMenuItem(
-                      value: 'undo',
-                      enabled: state.canUndo,
-                      child: const Text('Undo'),
-                    ),
-                    PopupMenuItem(
-                      value: 'redo',
-                      enabled: state.canRedo,
-                      child: const Text('Redo'),
-                    ),
-                  ],
-                ),
-              Padding(
-                padding: EdgeInsets.only(right: compactHeader ? 8 : 12),
-                child: compactHeader
-                    ? IconButton.filled(
-                        tooltip: 'Download video',
-                        style: IconButton.styleFrom(
-                          backgroundColor: _editorAccent,
-                          foregroundColor: Colors.white,
-                          shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(10)),
-                        ),
-                        onPressed: _isDownloading ||
-                                _isSaveRenderBusy ||
-                                state.isSaving
-                            ? null
-                            : _downloadLatest,
-                        icon: _isDownloading
-                            ? const SizedBox.square(
-                                dimension: 16,
-                                child: CircularProgressIndicator(
-                                    strokeWidth: 2, color: Colors.white),
-                              )
-                            : const Icon(Icons.download_rounded, size: 19),
-                      )
-                    : FilledButton.icon(
-                        style: FilledButton.styleFrom(
-                          backgroundColor: _editorAccent,
-                          foregroundColor: Colors.white,
-                          shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(10)),
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 16, vertical: 13),
-                        ),
-                        onPressed: _isDownloading ||
-                                _isSaveRenderBusy ||
-                                state.isSaving
-                            ? null
-                            : _downloadLatest,
-                        icon: _isDownloading
-                            ? const SizedBox.square(
-                                dimension: 16,
-                                child:
-                                    CircularProgressIndicator(strokeWidth: 2),
-                              )
-                            : const Icon(Icons.download_rounded, size: 19),
-                        label: Text(wide ? 'Download Video' : 'Download'),
-                      ),
-              ),
-            ],
-          ),
-          body: LayoutBuilder(
-            builder: (context, constraints) => wide
-                ? Row(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      _EditorNavigation(
+      child: _withWorkspaceHeader(
+        PopScope(
+          canPop: !state.hasUnsavedChanges,
+          onPopInvokedWithResult: (didPop, _) async {
+            if (didPop) return;
+            if (await _confirmLeave(state.hasUnsavedChanges) && context.mounted)
+              context.go('/dashboard');
+          },
+          child: Scaffold(
+            drawer: wide
+                ? null
+                : Drawer(
+                    width: math.min(screenWidth * 0.84, 310).toDouble(),
+                    child: SafeArea(
+                      child: _EditorNavigation(
                         selected: 'editor',
-                        extended: screenWidth >= 1600,
+                        extended: true,
                         onNavigate: (path) async {
+                          Navigator.of(context).pop();
                           if (await _confirmLeave(state.hasUnsavedChanges) &&
                               context.mounted) context.go(path);
                         },
                       ),
-                      const VerticalDivider(width: 1, color: _editorBorder),
-                      SizedBox(
-                        width: screenWidth >= 1500 ? 320 : 285,
-                        child: _EditorMediaPanel(
-                          transcript: state.transcript!,
-                          selectedIndex: _selectedSegmentIndex,
-                          positionSeconds: _positionSeconds,
-                          videoFormat: state.videoFormat,
-                          durationSeconds: _video?.value.isInitialized == true
-                              ? _video!.value.duration.inMilliseconds / 1000
-                              : null,
-                          onSelectSegment: selectSegment,
-                          onEditSegment: (index, text) =>
-                              _editWord(index, -1, text),
-                        ),
+                    ),
+                  ),
+            appBar: AppBar(
+              toolbarHeight: compactHeader ? 58 : 64,
+              title: Row(
+                children: [
+                  Container(
+                    width: compactHeader ? 34 : 38,
+                    height: compactHeader ? 34 : 38,
+                    decoration: BoxDecoration(
+                      color: _editorAccent,
+                      borderRadius: BorderRadius.circular(11),
+                    ),
+                    child: const Icon(Icons.play_arrow_rounded,
+                        color: Colors.white, size: 27),
+                  ),
+                  SizedBox(width: compactHeader ? 8 : 12),
+                  const Text('Caption Studio',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(fontWeight: FontWeight.w700)),
+                ],
+              ),
+              leading: Builder(
+                builder: (scaffoldContext) => IconButton(
+                  tooltip: wide ? 'Back to projects' : 'Open navigation',
+                  icon: Icon(wide ? Icons.arrow_back : Icons.menu_rounded),
+                  onPressed: wide
+                      ? () async {
+                          if (await _confirmLeave(state.hasUnsavedChanges) &&
+                              context.mounted) context.go('/dashboard');
+                        }
+                      : () => Scaffold.of(scaffoldContext).openDrawer(),
+                ),
+              ),
+              actions: [
+                if (wide) ...[
+                  Container(
+                    margin: const EdgeInsets.only(right: 8),
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                    decoration: BoxDecoration(
+                      color: _editorAccentSoft,
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    child: const Row(
+                      children: [
+                        Icon(Icons.auto_awesome_rounded,
+                            size: 17, color: _editorAccent),
+                        SizedBox(width: 7),
+                        Text('Captions ready',
+                            style: TextStyle(
+                                color: _editorAccent,
+                                fontWeight: FontWeight.w600)),
+                      ],
+                    ),
+                  ),
+                  OutlinedButton.icon(
+                    onPressed:
+                        _isDownloading || _isSaveRenderBusy || state.isSaving
+                            ? null
+                            : _saveDraft,
+                    icon: const Icon(Icons.save_outlined, size: 18),
+                    label: const Text('Save Draft'),
+                  ),
+                  const SizedBox(width: 10),
+                ],
+                if (wide || !compactHeader) ...[
+                  IconButton(
+                    tooltip: 'Undo',
+                    onPressed: state.canUndo
+                        ? ref
+                            .read(captionEditorProvider(widget.projectId)
+                                .notifier)
+                            .undo
+                        : null,
+                    icon: const Icon(Icons.undo_rounded),
+                  ),
+                  IconButton(
+                    tooltip: 'Redo',
+                    onPressed: state.canRedo
+                        ? ref
+                            .read(captionEditorProvider(widget.projectId)
+                                .notifier)
+                            .redo
+                        : null,
+                    icon: const Icon(Icons.redo_rounded),
+                  ),
+                ] else
+                  PopupMenuButton<String>(
+                    tooltip: 'More editor actions',
+                    onSelected: (action) {
+                      if (action == 'save') _saveDraft();
+                      if (action == 'undo') {
+                        ref
+                            .read(captionEditorProvider(widget.projectId)
+                                .notifier)
+                            .undo();
+                      }
+                      if (action == 'redo') {
+                        ref
+                            .read(captionEditorProvider(widget.projectId)
+                                .notifier)
+                            .redo();
+                      }
+                    },
+                    itemBuilder: (_) => [
+                      const PopupMenuItem(
+                          value: 'save', child: Text('Save draft')),
+                      PopupMenuItem(
+                        value: 'undo',
+                        enabled: state.canUndo,
+                        child: const Text('Undo'),
                       ),
-                      const VerticalDivider(width: 1, color: _editorBorder),
-                      Expanded(
-                        child: Column(
-                          children: [
-                            Expanded(
-                              child: Padding(
-                                padding:
-                                    const EdgeInsets.fromLTRB(18, 14, 18, 8),
-                                child: LayoutBuilder(
-                                  builder: (context, paneConstraints) =>
-                                      videoPane(paneConstraints.maxHeight),
-                                ),
-                              ),
-                            ),
-                            SizedBox(
-                              height: (constraints.maxHeight * 0.31)
-                                  .clamp(225.0, 285.0)
-                                  .toDouble(),
-                              child: Padding(
-                                padding:
-                                    const EdgeInsets.fromLTRB(12, 0, 12, 12),
-                                child: ClipRRect(
-                                  borderRadius: BorderRadius.circular(14),
-                                  child: _DesktopEditorTimeline(
-                                    transcript: state.transcript!,
-                                    positionSeconds: _positionSeconds,
-                                    selectedSegmentIndex: _selectedSegmentIndex,
-                                    trimPreviews: _timelineTrimPreviews,
-                                    durationSeconds:
-                                        _video?.value.isInitialized == true
-                                            ? _video!.value.duration
-                                                    .inMilliseconds /
-                                                1000
-                                            : null,
-                                    isPlaying: _video?.value.isPlaying ?? false,
-                                    onSeek: (seconds) => _video?.seekTo(
-                                        Duration(
-                                            milliseconds:
-                                                (seconds * 1000).round())),
-                                    onSelectSegment: selectSegment,
-                                    onEditSegment: (index) => _editWord(
-                                      index,
-                                      -1,
-                                      state.transcript!.segments[index].text,
-                                    ),
-                                    onTrimPreview: (index, start, end) =>
-                                        setState(() {
-                                      _timelineTrimPreviews[index] =
-                                          (start, end);
-                                    }),
-                                    onTrimSegment: (index, start, end) {
-                                      notifier.updateSegmentTiming(
-                                          index, start, end);
-                                      setState(() =>
-                                          _timelineTrimPreviews.remove(index));
-                                    },
-                                    onTogglePlayback: () {
-                                      final video = _video;
-                                      if (video == null ||
-                                          !video.value.isInitialized) return;
-                                      video.value.isPlaying
-                                          ? video.pause()
-                                          : video.play();
-                                    },
+                      PopupMenuItem(
+                        value: 'redo',
+                        enabled: state.canRedo,
+                        child: const Text('Redo'),
+                      ),
+                    ],
+                  ),
+                Padding(
+                  padding: EdgeInsets.only(right: compactHeader ? 8 : 12),
+                  child: compactHeader
+                      ? IconButton.filled(
+                          tooltip: 'Download video',
+                          style: IconButton.styleFrom(
+                            backgroundColor: _editorAccent,
+                            foregroundColor: Colors.white,
+                            shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(10)),
+                          ),
+                          onPressed: _isDownloading ||
+                                  _isSaveRenderBusy ||
+                                  state.isSaving
+                              ? null
+                              : _downloadLatest,
+                          icon: _isDownloading
+                              ? const SizedBox.square(
+                                  dimension: 16,
+                                  child: CircularProgressIndicator(
+                                      strokeWidth: 2, color: Colors.white),
+                                )
+                              : const Icon(Icons.download_rounded, size: 19),
+                        )
+                      : FilledButton.icon(
+                          style: FilledButton.styleFrom(
+                            backgroundColor: _editorAccent,
+                            foregroundColor: Colors.white,
+                            shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(10)),
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 16, vertical: 13),
+                          ),
+                          onPressed: _isDownloading ||
+                                  _isSaveRenderBusy ||
+                                  state.isSaving
+                              ? null
+                              : _downloadLatest,
+                          icon: _isDownloading
+                              ? const SizedBox.square(
+                                  dimension: 16,
+                                  child:
+                                      CircularProgressIndicator(strokeWidth: 2),
+                                )
+                              : const Icon(Icons.download_rounded, size: 19),
+                          label: Text(wide ? 'Download Video' : 'Download'),
+                        ),
+                ),
+              ],
+            ),
+            body: LayoutBuilder(
+              builder: (context, constraints) => wide
+                  ? Row(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        _EditorNavigation(
+                          selected: 'editor',
+                          extended: screenWidth >= 1600,
+                          onNavigate: (path) async {
+                            if (await _confirmLeave(state.hasUnsavedChanges) &&
+                                context.mounted) context.go(path);
+                          },
+                        ),
+                        const VerticalDivider(width: 1, color: _editorBorder),
+                        SizedBox(
+                          width: screenWidth >= 1500 ? 320 : 285,
+                          child: _EditorMediaPanel(
+                            transcript: state.transcript!,
+                            selectedIndex: _selectedSegmentIndex,
+                            positionSeconds: _positionSeconds,
+                            videoFormat: state.videoFormat,
+                            durationSeconds: _video?.value.isInitialized == true
+                                ? _video!.value.duration.inMilliseconds / 1000
+                                : null,
+                            onSelectSegment: selectSegment,
+                            onEditSegment: (index, text) =>
+                                _editWord(index, -1, text),
+                          ),
+                        ),
+                        const VerticalDivider(width: 1, color: _editorBorder),
+                        Expanded(
+                          child: Column(
+                            children: [
+                              Expanded(
+                                child: Padding(
+                                  padding:
+                                      const EdgeInsets.fromLTRB(18, 14, 18, 8),
+                                  child: LayoutBuilder(
+                                    builder: (context, paneConstraints) =>
+                                        videoPane(paneConstraints.maxHeight),
                                   ),
                                 ),
                               ),
-                            ),
-                          ],
-                        ),
-                      ),
-                      const VerticalDivider(width: 1, color: _editorBorder),
-                      SizedBox(
-                        width: screenWidth >= 1500 ? 400 : 365,
-                        child: Padding(
-                          padding: const EdgeInsets.fromLTRB(8, 10, 12, 10),
-                          child: ClipRRect(
-                            borderRadius: BorderRadius.circular(15),
-                            child: Material(
-                              color: Colors.white,
-                              child: Container(
-                                decoration: BoxDecoration(
-                                  border: Border.all(color: _editorBorder),
-                                  borderRadius: BorderRadius.circular(15),
+                              SizedBox(
+                                height: (constraints.maxHeight * 0.31)
+                                    .clamp(225.0, 285.0)
+                                    .toDouble(),
+                                child: Padding(
+                                  padding:
+                                      const EdgeInsets.fromLTRB(12, 0, 12, 12),
+                                  child: ClipRRect(
+                                    borderRadius: BorderRadius.circular(14),
+                                    child: _DesktopEditorTimeline(
+                                      transcript: state.transcript!,
+                                      positionSeconds: _positionSeconds,
+                                      selectedSegmentIndex:
+                                          _selectedSegmentIndex,
+                                      trimPreviews: _timelineTrimPreviews,
+                                      durationSeconds:
+                                          _video?.value.isInitialized == true
+                                              ? _video!.value.duration
+                                                      .inMilliseconds /
+                                                  1000
+                                              : null,
+                                      isPlaying:
+                                          _video?.value.isPlaying ?? false,
+                                      onSeek: (seconds) => _video?.seekTo(
+                                          Duration(
+                                              milliseconds:
+                                                  (seconds * 1000).round())),
+                                      onSelectSegment: selectSegment,
+                                      onEditSegment: (index) => _editWord(
+                                        index,
+                                        -1,
+                                        state.transcript!.segments[index].text,
+                                      ),
+                                      onTrimPreview: (index, start, end) =>
+                                          setState(() {
+                                        _timelineTrimPreviews[index] =
+                                            (start, end);
+                                      }),
+                                      onTrimSegment: (index, start, end) {
+                                        notifier.updateSegmentTiming(
+                                            index, start, end);
+                                        setState(() => _timelineTrimPreviews
+                                            .remove(index));
+                                      },
+                                      onTogglePlayback: () {
+                                        final video = _video;
+                                        if (video == null ||
+                                            !video.value.isInitialized) return;
+                                        video.value.isPlaying
+                                            ? video.pause()
+                                            : video.play();
+                                      },
+                                    ),
+                                  ),
                                 ),
-                                child: controls,
+                              ),
+                            ],
+                          ),
+                        ),
+                        const VerticalDivider(width: 1, color: _editorBorder),
+                        SizedBox(
+                          width: screenWidth >= 1500 ? 400 : 365,
+                          child: Padding(
+                            padding: const EdgeInsets.fromLTRB(8, 10, 12, 10),
+                            child: ClipRRect(
+                              borderRadius: BorderRadius.circular(15),
+                              child: Material(
+                                color: Colors.white,
+                                child: Container(
+                                  decoration: BoxDecoration(
+                                    border: Border.all(color: _editorBorder),
+                                    borderRadius: BorderRadius.circular(15),
+                                  ),
+                                  child: controls,
+                                ),
                               ),
                             ),
                           ),
                         ),
-                      ),
-                    ],
-                  )
-                : Column(
-                    children: [
-                      Expanded(
-                        flex: 6,
-                        child: Padding(
-                          padding: const EdgeInsets.fromLTRB(12, 4, 12, 0),
-                          child: LayoutBuilder(
-                            builder: (context, paneConstraints) => videoPane(
-                              paneConstraints.maxHeight,
-                              compact: true,
+                      ],
+                    )
+                  : Column(
+                      children: [
+                        Expanded(
+                          flex: 6,
+                          child: Padding(
+                            padding: const EdgeInsets.fromLTRB(12, 4, 12, 0),
+                            child: LayoutBuilder(
+                              builder: (context, paneConstraints) => videoPane(
+                                paneConstraints.maxHeight,
+                                compact: true,
+                              ),
                             ),
                           ),
                         ),
-                      ),
-                      _MobileCaptionTimeline(
-                        transcript: state.transcript!,
-                        positionSeconds: _positionSeconds,
-                        durationSeconds: _video?.value.isInitialized == true
-                            ? _video!.value.duration.inMilliseconds / 1000
-                            : null,
-                        isPlaying: _video?.value.isPlaying ?? false,
-                        onSeek: (seconds) => _video?.seekTo(
-                            Duration(milliseconds: (seconds * 1000).round())),
-                        onEditSegment: (index) => _editWord(
-                          index,
-                          -1,
-                          state.transcript!.segments[index].text,
+                        _MobileCaptionTimeline(
+                          transcript: state.transcript!,
+                          positionSeconds: _positionSeconds,
+                          durationSeconds: _video?.value.isInitialized == true
+                              ? _video!.value.duration.inMilliseconds / 1000
+                              : null,
+                          isPlaying: _video?.value.isPlaying ?? false,
+                          onSeek: (seconds) => _video?.seekTo(
+                              Duration(milliseconds: (seconds * 1000).round())),
+                          onEditSegment: (index) => _editWord(
+                            index,
+                            -1,
+                            state.transcript!.segments[index].text,
+                          ),
+                          onTogglePlayback: () {
+                            final video = _video;
+                            if (video == null || !video.value.isInitialized)
+                              return;
+                            video.value.isPlaying
+                                ? video.pause()
+                                : video.play();
+                          },
                         ),
-                        onTogglePlayback: () {
-                          final video = _video;
-                          if (video == null || !video.value.isInitialized)
-                            return;
-                          video.value.isPlaying ? video.pause() : video.play();
-                        },
-                      ),
-                      Expanded(
-                          flex: 5,
-                          child: SafeArea(top: false, child: controls)),
-                    ],
-                  ),
+                        Expanded(
+                            flex: 5,
+                            child: SafeArea(top: false, child: controls)),
+                      ],
+                    ),
+            ),
           ),
         ),
+        hasUnsavedChanges: state.hasUnsavedChanges,
       ),
     );
   }
@@ -1824,7 +1857,8 @@ class _DesktopEditorTimelineState extends State<_DesktopEditorTimeline> {
     final positionSeconds = widget.positionSeconds;
     final isPlaying = widget.isPlaying;
     final onSeek = widget.onSeek;
-    final duration = widget.durationSeconds != null && widget.durationSeconds! > 0
+    final duration = widget.durationSeconds != null &&
+            widget.durationSeconds! > 0
         ? widget.durationSeconds!
         : transcript.segments.fold<double>(
             1, (value, segment) => value > segment.end ? value : segment.end);
@@ -1887,10 +1921,10 @@ class _DesktopEditorTimelineState extends State<_DesktopEditorTimeline> {
                   child: LayoutBuilder(
                     builder: (context, constraints) {
                       final viewportWidth = constraints.maxWidth;
-                      final pixelsPerSecond = math.max(
-                          _pixelsPerSecond, viewportWidth / 15);
-                      final contentWidth = math.max(
-                          viewportWidth, duration * pixelsPerSecond);
+                      final pixelsPerSecond =
+                          math.max(_pixelsPerSecond, viewportWidth / 15);
+                      final contentWidth =
+                          math.max(viewportWidth, duration * pixelsPerSecond);
                       final timelineScale = contentWidth / duration;
                       return Scrollbar(
                         controller: _timelineScroll,
@@ -1922,7 +1956,8 @@ class _DesktopEditorTimelineState extends State<_DesktopEditorTimeline> {
                                 for (var index = 0;
                                     index < transcript.segments.length;
                                     index++)
-                                  _buildTimelineClip(index, duration, timelineScale),
+                                  _buildTimelineClip(
+                                      index, duration, timelineScale),
                               ],
                             ),
                           ),

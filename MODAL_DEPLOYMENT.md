@@ -96,9 +96,13 @@ services from PowerShell:
 
 This Docker-only local workflow does not call Modal. The local Compose override
 forces Celery jobs and local upload chunks even if `backend/.env` targets Modal.
-The stack starts the API at `http://localhost:9001`, transcription and render
-workers, Redis, and Celery Beat. Start the Flutter dev server separately with
-`.\frontend\run_web.ps1 -ApiBaseUrl http://localhost:9001`.
+The stack starts the API at `http://localhost:9001`, the frontend at
+`http://localhost:9000`, transcription and render workers, Redis, and Celery
+Beat. The frontend is compiled into its Nginx image before the container starts
+and waits for the API health check. Restarting containers does not rebuild the
+Flutter JavaScript in a live server. For hot reload during development, stop
+the frontend container and run
+`.\frontend\run_web.ps1 -ApiBaseUrl http://localhost:9001` separately.
 
 For worker timing comparisons, submit the same input through the local Docker
 stack and the Modal app and compare the pipeline stage durations recorded by

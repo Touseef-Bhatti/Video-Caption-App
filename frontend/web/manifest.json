@@ -1,11 +1,11 @@
 {
-    "name": "caption_app",
-    "short_name": "caption_app",
+    "name": "CaptionPro",
+    "short_name": "CaptionPro",
     "start_url": ".",
     "display": "standalone",
-    "background_color": "#0175C2",
-    "theme_color": "#0175C2",
-    "description": "A new Flutter project.",
+    "background_color": "#FEFDFF",
+    "theme_color": "#6E20E8",
+    "description": "Turn videos into polished, editable captions and export clips ready to share.",
     "orientation": "portrait-primary",
     "prefer_related_applications": false,
     "icons": [

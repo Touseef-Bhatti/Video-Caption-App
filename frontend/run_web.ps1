@@ -17,11 +17,6 @@ if ($listeners.Count -gt 0) {
 
 Push-Location $PSScriptRoot
 try {
-    # Recreate Flutter's generated web entrypoint on every clean startup so
-    # the dev server never falls back to index.html for a stale/missing JS file.
-    flutter clean
-    if ($LASTEXITCODE -ne 0) { throw "flutter clean failed (exit code $LASTEXITCODE)." }
-
     flutter pub get
     if ($LASTEXITCODE -ne 0) { throw "flutter pub get failed (exit code $LASTEXITCODE)." }
 

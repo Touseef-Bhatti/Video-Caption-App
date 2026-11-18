@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../core/theme.dart';
+import '../public/public_site_widgets.dart';
 
 class Breakpoints {
   Breakpoints._();
@@ -26,7 +27,8 @@ const _destinations = [
 
 /// Persistent navigation: a sidebar on tablet/desktop, a bottom bar on phones.
 class DashboardShell extends StatelessWidget {
-  const DashboardShell({super.key, required this.location, required this.child});
+  const DashboardShell(
+      {super.key, required this.location, required this.child});
 
   final String location;
   final Widget child;
@@ -43,12 +45,20 @@ class DashboardShell extends StatelessWidget {
 
     if (!wide) {
       return Scaffold(
-        body: SafeArea(child: child),
+        body: SafeArea(
+          child: Column(
+            children: [
+              PublicSiteHeader(activePath: location),
+              Expanded(child: child),
+            ],
+          ),
+        ),
         bottomNavigationBar: NavigationBar(
           selectedIndex: _index,
           onDestinationSelected: (i) => context.go(_destinations[i].path),
           destinations: [
-            for (final d in _destinations) NavigationDestination(icon: Icon(d.icon), label: d.label),
+            for (final d in _destinations)
+              NavigationDestination(icon: Icon(d.icon), label: d.label),
           ],
         ),
       );
@@ -58,33 +68,44 @@ class DashboardShell extends StatelessWidget {
     final theme = Theme.of(context);
     return Scaffold(
       body: SafeArea(
-        child: Row(
+        child: Column(
           children: [
-            NavigationRail(
-              extended: extended,
-              selectedIndex: _index,
-              backgroundColor: theme.cardTheme.color,
-              onDestinationSelected: (i) => context.go(_destinations[i].path),
-              leading: Padding(
-                padding: const EdgeInsets.symmetric(vertical: AppSpacing.md),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Icon(Icons.closed_caption_outlined, color: theme.colorScheme.primary),
-                    if (extended) ...[
-                      const SizedBox(width: AppSpacing.sm),
-                      Text('Captions', style: theme.textTheme.titleLarge),
+            PublicSiteHeader(activePath: location),
+            Expanded(
+              child: Row(
+                children: [
+                  NavigationRail(
+                    extended: extended,
+                    selectedIndex: _index,
+                    backgroundColor: theme.cardTheme.color,
+                    onDestinationSelected: (i) =>
+                        context.go(_destinations[i].path),
+                    leading: Padding(
+                      padding:
+                          const EdgeInsets.symmetric(vertical: AppSpacing.md),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(Icons.closed_caption_outlined,
+                              color: theme.colorScheme.primary),
+                          if (extended) ...[
+                            const SizedBox(width: AppSpacing.sm),
+                            Text('Captions', style: theme.textTheme.titleLarge),
+                          ],
+                        ],
+                      ),
+                    ),
+                    destinations: [
+                      for (final d in _destinations)
+                        NavigationRailDestination(
+                            icon: Icon(d.icon), label: Text(d.label)),
                     ],
-                  ],
-                ),
+                  ),
+                  const VerticalDivider(width: 1),
+                  Expanded(child: child),
+                ],
               ),
-              destinations: [
-                for (final d in _destinations)
-                  NavigationRailDestination(icon: Icon(d.icon), label: Text(d.label)),
-              ],
             ),
-            const VerticalDivider(width: 1),
-            Expanded(child: child),
           ],
         ),
       ),

@@ -22,10 +22,9 @@ class AppColors {
   static const darkText = Color(0xFFECECEC);
   static const darkTextMuted = Color(0xFFABABAB);
 
-  // Shared accent -- a single calm blue/teal, used sparingly for primary
-  // actions and active states, never as a background wash.
-  static const accent = Color(0xFF10A37F);
-  static const accentMuted = Color(0xFFD6F0E7);
+  // Shared brand accent, matched to the CaptionPro public site.
+  static const accent = Color(0xFF6E20E8);
+  static const accentMuted = Color(0xFFF4EDFF);
 
   static const danger = Color(0xFFD93025);
   static const warning = Color(0xFFB7791F);
